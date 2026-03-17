@@ -9,7 +9,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
+
+const testValueNew = "new"
 
 func TestParseWithoutFrontmatter(t *testing.T) {
 	t.Parallel()
@@ -425,7 +428,7 @@ func TestMutateContentHelpers(t *testing.T) {
 
 	content := []byte("---\ntitle: old\n---\nbody\n")
 	updated, changed, err := Mutate(content, func(doc *Document) error {
-		return doc.SetString("title", "new")
+		return doc.SetString("title", testValueNew)
 	})
 	if err != nil {
 		t.Fatalf("Mutate returned error: %v", err)
@@ -439,12 +442,12 @@ func TestMutateContentHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetString returned error: %v", err)
 	}
-	if !ok || title != "new" {
+	if !ok || title != testValueNew {
 		t.Fatalf("unexpected title: %q (ok=%v)", title, ok)
 	}
 
 	second, changed, err := Mutate(updated, func(doc *Document) error {
-		return doc.SetString("title", "new")
+		return doc.SetString("title", testValueNew)
 	})
 	if err != nil {
 		t.Fatalf("Mutate returned error: %v", err)
@@ -462,7 +465,7 @@ func TestMutateStringHelper(t *testing.T) {
 
 	content := "---\r\ntitle: old\r\n---\r\nbody\r\n"
 	updated, changed, err := MutateString(content, func(doc *Document) error {
-		return doc.SetString("title", "new")
+		return doc.SetString("title", testValueNew)
 	})
 	if err != nil {
 		t.Fatalf("MutateString returned error: %v", err)
@@ -472,6 +475,112 @@ func TestMutateStringHelper(t *testing.T) {
 	}
 	if !strings.Contains(updated, "\r\n") {
 		t.Fatalf("expected CRLF to be preserved")
+	}
+}
+
+func TestIntegrationSetIfMissingFlow(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\ntitle: note\n---\nbody\n"))
+
+	hasUID, err := doc.Has("uid")
+	if err != nil {
+		t.Fatalf("Has returned error: %v", err)
+	}
+	if hasUID {
+		t.Fatalf("expected uid to be absent in test fixture")
+	}
+
+	if err = doc.SetString("uid", "abc-123"); err != nil {
+		t.Fatalf("SetString returned error: %v", err)
+	}
+
+	uid, ok, err := doc.GetString("uid")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok || uid != "abc-123" {
+		t.Fatalf("unexpected uid: %q (ok=%v)", uid, ok)
+	}
+}
+
+func TestIntegrationReplaceMetadataFlow(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\ntitle: note\nfingerprint: old\n---\nbody\n"))
+	if err := doc.SetString("fingerprint", testValueNew); err != nil {
+		t.Fatalf("SetString returned error: %v", err)
+	}
+
+	fingerprint, ok, err := doc.GetString("fingerprint")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok || fingerprint != testValueNew {
+		t.Fatalf("unexpected fingerprint: %q (ok=%v)", fingerprint, ok)
+	}
+
+	keys := mustKeys(t, doc)
+	if !slices.Equal(keys, []string{"title", "fingerprint"}) {
+		t.Fatalf("unexpected key order after replace: %#v", keys)
+	}
+}
+
+func TestIntegrationRemoveThenAddFlow(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\ntitle: note\nfingerprint: old\n---\nbody\n"))
+
+	deleted := mustDelete(t, doc, "fingerprint")
+	if !deleted {
+		t.Fatalf("expected fingerprint to be deleted")
+	}
+
+	if err := doc.SetString("fingerprint", testValueNew); err != nil {
+		t.Fatalf("SetString returned error: %v", err)
+	}
+
+	fingerprint, ok, err := doc.GetString("fingerprint")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok || fingerprint != testValueNew {
+		t.Fatalf("unexpected fingerprint: %q (ok=%v)", fingerprint, ok)
+	}
+}
+
+func TestUpdateFileNoOpWhenUnchanged(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+
+	content := []byte("---\ntitle: same\n---\nbody\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	err = UpdateFile(path, func(doc *Document) error {
+		return doc.SetString("title", "same")
+	})
+	if err != nil {
+		t.Fatalf("UpdateFile returned error: %v", err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("expected file modtime to stay unchanged for no-op update")
 	}
 }
 

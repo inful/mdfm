@@ -40,7 +40,7 @@ Status legend: `todo`, `in-progress`, `done`.
   - Ensure key update and append rules are consistent.
   - Preserve semantic output guarantees.
 
-- [ ] **5. Integration-Style Validation** (`todo`)
+- [x] **5. Integration-Style Validation** (`done`)
   - Add tests that mirror downstream usage patterns (set-if-missing, replace, remove-then-add).
   - Validate unchanged-content no-op behavior.
 
@@ -77,3 +77,5 @@ Status legend: `todo`, `in-progress`, `done`.
   `GetString`, `Mutate`, and `MutateString`.
 - 2026-03-17: Centralized key lookup/edit internals and added order-stability
   tests for update-vs-append behavior.
+- 2026-03-17: Added integration-style tests for set-if-missing, replace,
+  remove-then-add flows, plus file no-op update validation.
