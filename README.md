@@ -84,7 +84,88 @@ err := mdfm.UpdateFile("note.md", func(doc *mdfm.Document) error {
 	_, err := doc.Delete("draft")
 	return err
 })
+
+// You can also use the typed helper for common string keys.
+err := mdfm.UpdateFile("note.md", func(doc *mdfm.Document) error {
+	return doc.SetString("title", "New Title")
+})
 ```
+
+## Content-Level Mutation Helpers
+
+Use `Mutate` or `MutateString` when your application already has markdown
+content in memory.
+
+```go
+updated, changed, err := mdfm.MutateString(content, func(doc *mdfm.Document) error {
+	if err := doc.SetString("title", "Updated"); err != nil {
+		return err
+	}
+
+	hasDraft, err := doc.Has("draft")
+	if err != nil {
+		return err
+	}
+	if hasDraft {
+		_, err = doc.Delete("draft")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+})
+if err != nil {
+	panic(err)
+}
+if changed {
+	content = updated
+}
+```
+
+## Downstream Integration Patterns
+
+`mdfm` is intended to be the frontmatter manipulation engine for downstream
+tools such as `mdid` and `mdfp`.
+
+### Set If Missing (mdid-style)
+
+```go
+err := mdfm.UpdateFile(path, func(doc *mdfm.Document) error {
+	hasUID, err := doc.Has("uid")
+	if err != nil {
+		return err
+	}
+	if hasUID {
+		return nil
+	}
+
+	return doc.SetString("uid", generatedUID)
+})
+```
+
+### Replace Metadata (mdfp-style)
+
+```go
+err := mdfm.UpdateFile(path, func(doc *mdfm.Document) error {
+	return doc.SetString("fingerprint", newFingerprint)
+})
+```
+
+### Remove Then Re-Add (mdfp-style)
+
+```go
+err := mdfm.UpdateFile(path, func(doc *mdfm.Document) error {
+	_, err := doc.Delete("fingerprint")
+	if err != nil {
+		return err
+	}
+
+	return doc.SetString("fingerprint", newFingerprint)
+})
+```
+
+Note: fingerprint calculation and UID generation stay in downstream tools.
 
 ## CLI
 

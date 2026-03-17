@@ -44,7 +44,7 @@ Status legend: `todo`, `in-progress`, `done`.
   - Add tests that mirror downstream usage patterns (set-if-missing, replace, remove-then-add).
   - Validate unchanged-content no-op behavior.
 
-- [ ] **6. Documentation Updates** (`todo`)
+- [x] **6. Documentation Updates** (`done`)
   - Update README with scope and non-goals.
   - Add usage guidance for downstream libraries.
   - Document operation guarantees clearly.
@@ -79,3 +79,5 @@ Status legend: `todo`, `in-progress`, `done`.
   tests for update-vs-append behavior.
 - 2026-03-17: Added integration-style tests for set-if-missing, replace,
   remove-then-add flows, plus file no-op update validation.
+- 2026-03-17: Expanded README with content-level mutation helpers and
+  downstream integration patterns for mdid/mdfp-style workflows.
