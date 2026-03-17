@@ -1,0 +1,50 @@
+name: Benchmark (PR)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-pr:
+    name: Compare PR benchmarks against baseline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go benchmarks
+        run: |
+          go version
+          go test -bench . -benchmem -run ^$ ./... | tee output.txt
+
+      - name: Restore baseline benchmark cache from base branch
+        uses: actions/cache@v5
+        with:
+          path: ./cache
+          key: ${{ runner.os }}-benchmark-${{ github.base_ref }}
+          restore-keys: |
+            ${{ runner.os }}-benchmark-
+
+      - name: Compare with baseline (no writes)
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: mdfm Go Benchmarks
+          tool: go
+          output-file-path: output.txt
+          external-data-json-path: ./cache/benchmark-data.json
+          save-data-file: false
+          fail-on-alert: true
+          comment-on-alert: true
+          summary-always: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}

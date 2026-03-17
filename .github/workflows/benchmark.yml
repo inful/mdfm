@@ -1,0 +1,60 @@
+name: Continuous Benchmark (Go)
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: write
+  deployments: write
+
+jobs:
+  benchmark:
+    name: Performance regression check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go benchmarks
+        run: |
+          go version
+          go test -bench . -benchmem -run ^$ ./... | tee output.txt
+
+      - name: Download previous benchmark data (cache baseline)
+        uses: actions/cache@v5
+        with:
+          path: ./cache
+          key: ${{ runner.os }}-benchmark-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-benchmark-
+
+      - name: Update cache baseline with current results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: mdfm Go Benchmarks
+          tool: go
+          output-file-path: output.txt
+          external-data-json-path: ./cache/benchmark-data.json
+          fail-on-alert: false
+          comment-on-alert: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Store benchmark result to GitHub Pages
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: mdfm Go Benchmarks
+          tool: go
+          output-file-path: output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+          alert-threshold: '200%'
