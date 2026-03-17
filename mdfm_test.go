@@ -105,6 +105,15 @@ func TestParseNonMappingFrontmatter(t *testing.T) {
 	}
 }
 
+func TestParseMalformedYAMLFrontmatter(t *testing.T) {
+	t.Parallel()
+
+	_, err := Parse([]byte("---\ntitle: [oops\n---\nbody\n"))
+	if err == nil {
+		t.Fatalf("expected parse error for malformed YAML")
+	}
+}
+
 func TestSetGetDeleteKeys(t *testing.T) {
 	t.Parallel()
 
@@ -225,6 +234,34 @@ func TestSetFrontmatterAndBytes(t *testing.T) {
 	}
 
 	if string(output) != "---\na: 1\nb: true\n---\nbody\n" {
+		t.Fatalf("unexpected output: %q", string(output))
+	}
+}
+
+func TestSetPreservesCRLFWhenFrontmatterExists(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\r\ntitle: old\r\n---\r\nbody\r\n"))
+	mustSet(t, doc, "title", "new")
+
+	output := mustBytes(t, doc)
+	if !bytes.Contains(output, []byte("\r\n")) {
+		t.Fatalf("expected CRLF newlines in output")
+	}
+	lfOnly := bytes.ReplaceAll(output, []byte("\r\n"), nil)
+	if bytes.Contains(lfOnly, []byte("\n")) {
+		t.Fatalf("expected no LF-only newlines")
+	}
+}
+
+func TestSetCreatesFrontmatterWithPreferredNewline(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("body\r\n"))
+	mustSet(t, doc, "title", "new")
+
+	output := mustBytes(t, doc)
+	if !bytes.Equal(output, []byte("---\r\ntitle: new\r\n---\r\nbody\r\n")) {
 		t.Fatalf("unexpected output: %q", string(output))
 	}
 }

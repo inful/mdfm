@@ -9,6 +9,17 @@ Scope:
 - This package does not implement metadata business logic such as UID generation
 	or fingerprint calculation.
 
+## Operation Guarantees
+
+- `Set` updates an existing top-level key in place.
+- `Set` appends a missing top-level key.
+- `Get` and `Has` return `found=false` for missing keys.
+- `Delete` removes only the requested top-level key and reports whether it was removed.
+- Repeating `Set` with the same value is idempotent at the byte level.
+- Repeating `Delete` on a missing key is idempotent at the byte level.
+- Newline style is preserved (`LF` vs `CRLF`) when parsing and mutating documents.
+- Frontmatter must be a YAML mapping for semantic key operations.
+
 It is built to be fast, robust, and correct:
 
 - Delimiter scanning is line-based and allocation-light.
