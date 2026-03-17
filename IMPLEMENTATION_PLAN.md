@@ -53,7 +53,7 @@ Status legend: `todo`, `in-progress`, `done`.
   - Run `go test ./...`.
   - Run `golangci-lint run ./...` and fix findings.
 
-- [ ] **8. Delivery and Commits** (`todo`)
+- [x] **8. Delivery and Commits** (`done`)
   - Use conventional commits.
   - Keep commits small and reviewable.
   - Ensure lint and tests pass before each commit.
@@ -82,3 +82,11 @@ Status legend: `todo`, `in-progress`, `done`.
 - 2026-03-17: Expanded README with content-level mutation helpers and
   downstream integration patterns for mdid/mdfp-style workflows.
 - 2026-03-17: Quality gates passed (`go test ./...`, `golangci-lint run ./...`).
+- 2026-03-17: Delivery completed with conventional, focused commits:
+  - `5398e85` feat: add Has operation and semantic contract tests
+  - `3056dcd` test: add newline and malformed frontmatter contracts
+  - `6e1fde0` feat: add typed and content mutation helper APIs
+  - `fbced98` refactor: centralize frontmatter key mutation paths
+  - `0616291` test: add integration validation flows
+  - `294718e` docs: add downstream integration guidance
+  - `80a9571` docs: record quality gate completion
