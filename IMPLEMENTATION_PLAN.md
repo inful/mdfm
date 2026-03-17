@@ -35,7 +35,7 @@ Status legend: `todo`, `in-progress`, `done`.
   - Add focused helpers only where they reduce consumer boilerplate.
   - Keep behavior deterministic and backwards-compatible where possible.
 
-- [ ] **4. Internal Refactor for Stability** (`todo`)
+- [x] **4. Internal Refactor for Stability** (`done`)
   - Centralize key lookup/edit internals.
   - Ensure key update and append rules are consistent.
   - Preserve semantic output guarantees.
@@ -75,3 +75,5 @@ Status legend: `todo`, `in-progress`, `done`.
   newline preservation during semantic mutations (`LF` and `CRLF`).
 - 2026-03-17: Added minimal downstream-focused helpers: `SetString`,
   `GetString`, `Mutate`, and `MutateString`.
+- 2026-03-17: Centralized key lookup/edit internals and added order-stability
+  tests for update-vs-append behavior.

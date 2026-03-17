@@ -217,6 +217,30 @@ func TestDeleteMissingKeyIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSetExistingKeyPreservesKeyOrder(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\na: 1\nb: 2\n---\nbody\n"))
+	mustSet(t, doc, "a", 10)
+
+	keys := mustKeys(t, doc)
+	if !slices.Equal(keys, []string{"a", "b"}) {
+		t.Fatalf("unexpected key order after update: %#v", keys)
+	}
+}
+
+func TestSetMissingKeyAppendsInDocumentOrder(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\na: 1\nb: 2\n---\nbody\n"))
+	mustSet(t, doc, "c", 3)
+
+	keys := mustKeys(t, doc)
+	if !slices.Equal(keys, []string{"a", "b", "c"}) {
+		t.Fatalf("unexpected key order after append: %#v", keys)
+	}
+}
+
 func TestSetFrontmatterAndBytes(t *testing.T) {
 	t.Parallel()
 

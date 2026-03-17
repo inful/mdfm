@@ -270,16 +270,16 @@ func (d *Document) Get(key string) (any, bool, error) {
 		return nil, false, nil
 	}
 
-	idx, err := d.findKeyIndex(key)
+	valueNode, ok, err := d.valueNodeForKey(key)
 	if err != nil {
 		return nil, false, err
 	}
-	if idx < 0 {
+	if !ok {
 		return nil, false, nil
 	}
 
 	var value any
-	if err = d.frontmatter.Content[idx+1].Decode(&value); err != nil {
+	if err = valueNode.Decode(&value); err != nil {
 		return nil, false, fmt.Errorf("failed to decode value for key %q: %w", key, err)
 	}
 
@@ -295,12 +295,12 @@ func (d *Document) Has(key string) (bool, error) {
 		return false, nil
 	}
 
-	idx, err := d.findKeyIndex(key)
+	_, ok, err := d.valueNodeForKey(key)
 	if err != nil {
 		return false, err
 	}
 
-	return idx >= 0, nil
+	return ok, nil
 }
 
 // GetString returns a frontmatter string value by key.
@@ -339,23 +339,7 @@ func (d *Document) Set(key string, value any) error {
 		return err
 	}
 
-	idx, err := d.findKeyIndex(key)
-	if err != nil {
-		return err
-	}
-
-	if idx >= 0 {
-		d.frontmatter.Content[idx+1] = valueNode
-		return nil
-	}
-
-	d.frontmatter.Content = append(
-		d.frontmatter.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
-		valueNode,
-	)
-
-	return nil
+	return d.upsertValueNode(key, valueNode)
 }
 
 // Delete removes a frontmatter key.
@@ -375,10 +359,7 @@ func (d *Document) Delete(key string) (bool, error) {
 		return false, nil
 	}
 
-	d.frontmatter.Content = append(
-		d.frontmatter.Content[:idx],
-		d.frontmatter.Content[idx+2:]...,
-	)
+	d.deleteValueAtIndex(idx)
 
 	return true, nil
 }
@@ -488,6 +469,47 @@ func (d *Document) findKeyIndex(key string) (int, error) {
 	}
 
 	return -1, nil
+}
+
+func (d *Document) valueNodeForKey(key string) (*yaml.Node, bool, error) {
+	idx, err := d.findKeyIndex(key)
+	if err != nil {
+		return nil, false, err
+	}
+	if idx < 0 {
+		return nil, false, nil
+	}
+
+	return d.frontmatter.Content[idx+1], true, nil
+}
+
+func (d *Document) upsertValueNode(key string, valueNode *yaml.Node) error {
+	idx, err := d.findKeyIndex(key)
+	if err != nil {
+		return err
+	}
+	if idx >= 0 {
+		d.frontmatter.Content[idx+1] = valueNode
+		return nil
+	}
+
+	d.appendKeyValueNode(key, valueNode)
+	return nil
+}
+
+func (d *Document) appendKeyValueNode(key string, valueNode *yaml.Node) {
+	d.frontmatter.Content = append(
+		d.frontmatter.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		valueNode,
+	)
+}
+
+func (d *Document) deleteValueAtIndex(idx int) {
+	d.frontmatter.Content = append(
+		d.frontmatter.Content[:idx],
+		d.frontmatter.Content[idx+2:]...,
+	)
 }
 
 func parseFrontmatterMapping(data []byte) (yaml.Node, error) {
