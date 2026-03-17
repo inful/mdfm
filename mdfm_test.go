@@ -599,6 +599,29 @@ func TestFrontmatterReturnsMap(t *testing.T) {
 	}
 }
 
+func TestFrontmatterNilDocument(t *testing.T) {
+	t.Parallel()
+
+	var doc *Document
+	frontmatter, err := doc.Frontmatter()
+	if err != nil {
+		t.Fatalf("Frontmatter returned error: %v", err)
+	}
+	if len(frontmatter) != 0 {
+		t.Fatalf("expected empty map, got %#v", frontmatter)
+	}
+}
+
+func TestFrontmatterInvalidMapping(t *testing.T) {
+	t.Parallel()
+
+	doc := &Document{hasFrontmatter: true, frontmatter: yaml.Node{Kind: yaml.SequenceNode}}
+	_, err := doc.Frontmatter()
+	if !errors.Is(err, ErrFrontmatterNotMapping) {
+		t.Fatalf("expected ErrFrontmatterNotMapping, got: %v", err)
+	}
+}
+
 func TestWriteFile(t *testing.T) {
 	t.Parallel()
 
@@ -715,6 +738,15 @@ func TestWriteFileAtomic(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicValidationError(t *testing.T) {
+	t.Parallel()
+
+	err := writeFileAtomic("", []byte("x"), 0o600)
+	if err == nil {
+		t.Fatalf("expected error for empty path")
+	}
+}
+
 func TestApplyMutation(t *testing.T) {
 	t.Parallel()
 
@@ -742,6 +774,26 @@ func TestNodeFromValueNil(t *testing.T) {
 	}
 	if node.Tag != "!!null" {
 		t.Fatalf("unexpected tag: %q", node.Tag)
+	}
+}
+
+func TestNodeFromValueScalarAndMap(t *testing.T) {
+	t.Parallel()
+
+	scalarNode, err := nodeFromValue("hello")
+	if err != nil {
+		t.Fatalf("nodeFromValue returned error: %v", err)
+	}
+	if scalarNode.Kind != yaml.ScalarNode {
+		t.Fatalf("expected scalar kind, got %v", scalarNode.Kind)
+	}
+
+	mapNode, err := nodeFromValue(map[string]any{"a": 1})
+	if err != nil {
+		t.Fatalf("nodeFromValue returned error: %v", err)
+	}
+	if mapNode.Kind != yaml.MappingNode {
+		t.Fatalf("expected mapping kind, got %v", mapNode.Kind)
 	}
 }
 
@@ -802,6 +854,41 @@ func TestUpdateFileNoOpWhenUnchanged(t *testing.T) {
 
 	if !after.ModTime().Equal(before.ModTime()) {
 		t.Fatalf("expected file modtime to stay unchanged for no-op update")
+	}
+}
+
+func TestUpdateFileValidationAndMutationError(t *testing.T) {
+	t.Parallel()
+
+	if err := UpdateFile("", nil); !errors.Is(err, errPathEmpty) {
+		t.Fatalf("expected errPathEmpty, got: %v", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("body\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	mutateErr := errors.New("mutate failed")
+	err := UpdateFile(path, func(*Document) error { return mutateErr })
+	if !errors.Is(err, mutateErr) {
+		t.Fatalf("expected wrapped mutate error, got: %v", err)
+	}
+}
+
+func TestUpdateFileParseError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(path, []byte("---\ntitle: [oops\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	err := UpdateFile(path, nil)
+	if err == nil || !strings.Contains(err.Error(), "failed to parse markdown") {
+		t.Fatalf("expected wrapped parse error, got: %v", err)
 	}
 }
 
