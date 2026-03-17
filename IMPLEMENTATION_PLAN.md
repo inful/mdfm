@@ -49,7 +49,7 @@ Status legend: `todo`, `in-progress`, `done`.
   - Add usage guidance for downstream libraries.
   - Document operation guarantees clearly.
 
-- [ ] **7. Quality Gates** (`todo`)
+- [x] **7. Quality Gates** (`done`)
   - Run `go test ./...`.
   - Run `golangci-lint run ./...` and fix findings.
 
@@ -81,3 +81,4 @@ Status legend: `todo`, `in-progress`, `done`.
   remove-then-add flows, plus file no-op update validation.
 - 2026-03-17: Expanded README with content-level mutation helpers and
   downstream integration patterns for mdid/mdfp-style workflows.
+- 2026-03-17: Quality gates passed (`go test ./...`, `golangci-lint run ./...`).
