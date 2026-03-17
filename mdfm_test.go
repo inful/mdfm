@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -614,6 +616,157 @@ func TestWriteFile(t *testing.T) {
 	}
 	if string(content) != "---\ntitle: hello\n---\nbody\n" {
 		t.Fatalf("unexpected written content: %q", string(content))
+	}
+}
+
+func TestWriteFileEmptyPath(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("body\n"))
+	if err := doc.WriteFile("", 0o600); !errors.Is(err, errPathEmpty) {
+		t.Fatalf("expected errPathEmpty, got: %v", err)
+	}
+}
+
+func TestReadFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("---\ntitle: hello\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	doc, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+
+	title, ok, err := doc.GetString("title")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok || title != testValueHello {
+		t.Fatalf("unexpected title: %q (ok=%v)", title, ok)
+	}
+}
+
+func TestReadFileValidation(t *testing.T) {
+	t.Parallel()
+
+	_, err := ReadFile("")
+	if !errors.Is(err, errPathEmpty) {
+		t.Fatalf("expected errPathEmpty, got: %v", err)
+	}
+}
+
+func TestReadFileParseError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(path, []byte("---\ntitle: [oops\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := ReadFile(path)
+	if err == nil || !strings.Contains(err.Error(), "failed to parse markdown") {
+		t.Fatalf("expected wrapped parse error, got: %v", err)
+	}
+}
+
+func TestReadRegularFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("body\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	content, perm, err := readRegularFile(path)
+	if err != nil {
+		t.Fatalf("readRegularFile returned error: %v", err)
+	}
+	if string(content) != "body\n" {
+		t.Fatalf("unexpected content: %q", string(content))
+	}
+	if perm != 0o600 {
+		t.Fatalf("unexpected perm: %#o", perm)
+	}
+}
+
+func TestWriteFileAtomic(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atomic.md")
+
+	if err := writeFileAtomic(path, []byte("content\n"), 0o600); err != nil {
+		t.Fatalf("writeFileAtomic returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(content) != "content\n" {
+		t.Fatalf("unexpected content: %q", string(content))
+	}
+}
+
+func TestApplyMutation(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("body\n"))
+	if err := applyMutation(doc, nil); err != nil {
+		t.Fatalf("applyMutation returned error: %v", err)
+	}
+
+	mutateErr := errors.New("boom")
+	err := applyMutation(doc, func(*Document) error { return mutateErr })
+	if !errors.Is(err, mutateErr) {
+		t.Fatalf("expected wrapped mutate error, got: %v", err)
+	}
+}
+
+func TestNodeFromValueNil(t *testing.T) {
+	t.Parallel()
+
+	node, err := nodeFromValue(nil)
+	if err != nil {
+		t.Fatalf("nodeFromValue returned error: %v", err)
+	}
+	if node == nil {
+		t.Fatalf("expected non-nil node")
+	}
+	if node.Tag != "!!null" {
+		t.Fatalf("unexpected tag: %q", node.Tag)
+	}
+}
+
+func TestCloneNodePtr(t *testing.T) {
+	t.Parallel()
+
+	if cloneNodePtr(nil) != nil {
+		t.Fatalf("expected nil clone for nil input")
+	}
+
+	original := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Tag:  "!!map",
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "title"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "hello"},
+		},
+	}
+	cloned := cloneNodePtr(original)
+	if cloned == nil || cloned == original {
+		t.Fatalf("expected deep cloned node")
+	}
+	original.Content[1].Value = "mutated"
+	if cloned.Content[1].Value != "hello" {
+		t.Fatalf("expected clone to be independent, got %q", cloned.Content[1].Value)
 	}
 }
 
