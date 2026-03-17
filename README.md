@@ -18,12 +18,13 @@ Scope:
 - Repeating `Set` with the same value is idempotent at the byte level.
 - Repeating `Delete` on a missing key is idempotent at the byte level.
 - Newline style is preserved (`LF` vs `CRLF`) when parsing and mutating documents.
-- Frontmatter must be a YAML mapping for semantic key operations.
+- Frontmatter must be a YAML mapping with unique mapping keys for semantic key operations.
 
 It is built to be fast, robust, and correct:
 
 - Delimiter scanning is line-based and allocation-light.
 - Frontmatter is parsed with `yaml.v3` for full YAML correctness.
+- Duplicate mapping keys are rejected during parse.
 - File updates are atomic and skip writes when content is unchanged.
 - Symlink reads/updates are refused for safer file operations.
 

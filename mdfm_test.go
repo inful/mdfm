@@ -114,6 +114,24 @@ func TestParseNonMappingFrontmatter(t *testing.T) {
 	}
 }
 
+func TestParseDuplicateFrontmatterKeys(t *testing.T) {
+	t.Parallel()
+
+	_, err := Parse([]byte("---\ntitle: one\ntitle: two\n---\nbody\n"))
+	if !errors.Is(err, ErrDuplicateFrontmatterKey) {
+		t.Fatalf("expected ErrDuplicateFrontmatterKey, got: %v", err)
+	}
+}
+
+func TestParseDuplicateNestedFrontmatterKeys(t *testing.T) {
+	t.Parallel()
+
+	_, err := Parse([]byte("---\nmeta:\n  title: one\n  title: two\n---\nbody\n"))
+	if !errors.Is(err, ErrDuplicateFrontmatterKey) {
+		t.Fatalf("expected ErrDuplicateFrontmatterKey, got: %v", err)
+	}
+}
+
 func TestParseMalformedYAMLFrontmatter(t *testing.T) {
 	t.Parallel()
 
@@ -642,6 +660,47 @@ func TestWriteFile(t *testing.T) {
 	}
 }
 
+func TestWriteFileRefusesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions can vary on Windows runners")
+	}
+
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.md")
+	link := filepath.Join(dir, "link.md")
+	doc := mustParse(t, []byte("---\ntitle: hello\n---\nbody\n"))
+
+	if err := os.WriteFile(target, []byte("old\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+
+	err := doc.WriteFile(link, 0o600)
+	if err == nil {
+		t.Fatalf("expected error when writing symlink")
+	}
+
+	info, statErr := os.Lstat(link)
+	if statErr != nil {
+		t.Fatalf("Lstat returned error: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected symlink to remain in place, mode=%v", info.Mode())
+	}
+
+	content, readErr := os.ReadFile(target) // #nosec G304 -- path is created by t.TempDir in this test.
+	if readErr != nil {
+		t.Fatalf("ReadFile returned error: %v", readErr)
+	}
+	if string(content) != "old\n" {
+		t.Fatalf("unexpected target content: %q", string(content))
+	}
+}
+
 func TestWriteFileEmptyPath(t *testing.T) {
 	t.Parallel()
 
@@ -694,6 +753,24 @@ func TestReadFileParseError(t *testing.T) {
 
 	_, err := ReadFile(path)
 	if err == nil || !strings.Contains(err.Error(), "failed to parse markdown") {
+		t.Fatalf("expected wrapped parse error, got: %v", err)
+	}
+}
+
+func TestReadFileDuplicateKeyError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "duplicate.md")
+	if err := os.WriteFile(path, []byte("---\ntitle: one\ntitle: two\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := ReadFile(path)
+	if !errors.Is(err, ErrDuplicateFrontmatterKey) {
+		t.Fatalf("expected ErrDuplicateFrontmatterKey, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed to parse markdown") {
 		t.Fatalf("expected wrapped parse error, got: %v", err)
 	}
 }
@@ -889,6 +966,35 @@ func TestUpdateFileParseError(t *testing.T) {
 	err := UpdateFile(path, nil)
 	if err == nil || !strings.Contains(err.Error(), "failed to parse markdown") {
 		t.Fatalf("expected wrapped parse error, got: %v", err)
+	}
+}
+
+func TestUpdateFileDuplicateKeyError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "duplicate.md")
+	original := []byte("---\ntitle: one\ntitle: two\n---\nbody\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	err := UpdateFile(path, func(doc *Document) error {
+		return doc.SetString("title", "new")
+	})
+	if !errors.Is(err, ErrDuplicateFrontmatterKey) {
+		t.Fatalf("expected ErrDuplicateFrontmatterKey, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed to parse markdown") {
+		t.Fatalf("expected wrapped parse error, got: %v", err)
+	}
+
+	content, readErr := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
+	if readErr != nil {
+		t.Fatalf("ReadFile returned error: %v", readErr)
+	}
+	if !bytes.Equal(content, original) {
+		t.Fatalf("expected file content to remain unchanged, got %q", string(content))
 	}
 }
 

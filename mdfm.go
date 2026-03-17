@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +34,10 @@ var (
 	// ErrFrontmatterNotMapping is returned when parsed frontmatter is valid YAML
 	// but not a top-level mapping.
 	ErrFrontmatterNotMapping = errors.New("frontmatter must be a YAML mapping")
+
+	// ErrDuplicateFrontmatterKey is returned when frontmatter contains duplicate
+	// mapping keys.
+	ErrDuplicateFrontmatterKey = errors.New("frontmatter contains duplicate mapping keys")
 
 	// ErrEmptyKey is returned when a frontmatter operation receives an empty key.
 	ErrEmptyKey = errors.New("frontmatter key cannot be empty")
@@ -434,6 +439,15 @@ func (d *Document) WriteFile(path string, perm os.FileMode) error {
 		return errPathEmpty
 	}
 
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write symlink: %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+
 	data, err := d.Bytes()
 	if err != nil {
 		return fmt.Errorf("failed to serialize document: %w", err)
@@ -522,8 +536,90 @@ func parseFrontmatterMapping(data []byte) (yaml.Node, error) {
 	if err != nil {
 		return yaml.Node{}, err
 	}
+	if err := validateUniqueMappingKeys(mappingNode); err != nil {
+		return yaml.Node{}, err
+	}
 
 	return cloneNode(mappingNode), nil
+}
+
+func validateUniqueMappingKeys(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+
+	switch node.Kind {
+	case yaml.MappingNode:
+		return validateUniqueKeysInMapping(node)
+	case yaml.SequenceNode:
+		return validateUniqueKeysInChildren(node.Content)
+	case yaml.AliasNode:
+		if node.Alias != nil {
+			return validateUniqueMappingKeys(node.Alias)
+		}
+	}
+
+	return nil
+}
+
+func validateUniqueKeysInMapping(node *yaml.Node) error {
+	seen := make(map[string]struct{}, len(node.Content)/frontmatterKVPairWidth)
+	for i := 0; i < len(node.Content); i += frontmatterKVPairWidth {
+		keyNode := node.Content[i]
+		keyID, err := mappingKeyIdentity(keyNode)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[keyID]; exists {
+			return fmt.Errorf("%w: %s", ErrDuplicateFrontmatterKey, mappingKeyLabel(keyNode))
+		}
+		seen[keyID] = struct{}{}
+
+		if err := validateUniqueMappingKeys(node.Content[i+1]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateUniqueKeysInChildren(children []*yaml.Node) error {
+	for _, child := range children {
+		if err := validateUniqueMappingKeys(child); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func mappingKeyIdentity(node *yaml.Node) (string, error) {
+	if node == nil {
+		return "", fmt.Errorf("%w: <nil>", ErrDuplicateFrontmatterKey)
+	}
+
+	encoded, err := yaml.Marshal(node)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode frontmatter key: %w", err)
+	}
+
+	return string(encoded), nil
+}
+
+func mappingKeyLabel(node *yaml.Node) string {
+	if node == nil {
+		return "<nil>"
+	}
+	if node.Kind == yaml.ScalarNode {
+		return node.Value
+	}
+
+	encoded, err := yaml.Marshal(node)
+	if err != nil {
+		return "<unprintable key>"
+	}
+
+	return strings.TrimSpace(string(encoded))
 }
 
 func extractMappingNode(root *yaml.Node) (*yaml.Node, error) {
