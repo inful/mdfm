@@ -20,12 +20,12 @@ Status legend: `todo`, `in-progress`, `done`.
 
 ## Work Items
 
-- [ ] **1. Scope and Contract Definition** (`todo`)
+- [ ] **1. Scope and Contract Definition** (`in-progress`)
   - Define and document operation guarantees for `Parse`, `Set`, `Get`, `Has`, `Delete`, `Keys`, and file updates.
   - Clarify newline and delimiter behavior.
   - Document strict mapping behavior and explicit error cases.
 
-- [ ] **2. Test Contract First (TDD)** (`todo`)
+- [ ] **2. Test Contract First (TDD)** (`in-progress`)
   - Add/extend tests that lock semantic operation behavior.
   - Add idempotency tests for repeated operations.
   - Add LF/CRLF and malformed frontmatter edge case tests.
@@ -68,3 +68,6 @@ Status legend: `todo`, `in-progress`, `done`.
 
 - Update each work item status from `todo` to `in-progress` and `done` as execution progresses.
 - Add links to PRs or commits next to completed items.
+- 2026-03-17: Started implementation with TDD by adding `Has` contract tests,
+  idempotency tests for repeated `Set`/`Delete`, and initial scope documentation
+  updates in README.

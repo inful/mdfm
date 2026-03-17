@@ -131,6 +131,80 @@ func TestSetGetDeleteKeys(t *testing.T) {
 	if ok {
 		t.Fatalf("expected deleted key to be missing")
 	}
+
+	has, err := doc.Has("tags")
+	if err != nil {
+		t.Fatalf("Has returned error: %v", err)
+	}
+	if !has {
+		t.Fatalf("expected tags key to exist")
+	}
+
+	has, err = doc.Has("title")
+	if err != nil {
+		t.Fatalf("Has returned error: %v", err)
+	}
+	if has {
+		t.Fatalf("expected title key to be missing")
+	}
+}
+
+func TestHasValidationAndNoFrontmatter(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("body\n"))
+
+	has, err := doc.Has("missing")
+	if err != nil {
+		t.Fatalf("Has returned error: %v", err)
+	}
+	if has {
+		t.Fatalf("expected missing key to not exist")
+	}
+
+	_, err = doc.Has("")
+	if !errors.Is(err, ErrEmptyKey) {
+		t.Fatalf("expected ErrEmptyKey from Has, got: %v", err)
+	}
+}
+
+func TestSetExistingKeyIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\ntitle: one\n---\nbody\n"))
+	mustSet(t, doc, "title", "two")
+
+	first := mustBytes(t, doc)
+
+	mustSet(t, doc, "title", "two")
+	second := mustBytes(t, doc)
+
+	if !bytes.Equal(first, second) {
+		t.Fatalf("expected idempotent bytes after repeated Set")
+	}
+}
+
+func TestDeleteMissingKeyIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\ntitle: one\n---\nbody\n"))
+
+	deleted := mustDelete(t, doc, "missing")
+	if deleted {
+		t.Fatalf("expected first delete of missing key to return false")
+	}
+
+	first := mustBytes(t, doc)
+
+	deleted = mustDelete(t, doc, "missing")
+	if deleted {
+		t.Fatalf("expected second delete of missing key to return false")
+	}
+
+	second := mustBytes(t, doc)
+	if !bytes.Equal(first, second) {
+		t.Fatalf("expected idempotent bytes after repeated Delete")
+	}
 }
 
 func TestSetFrontmatterAndBytes(t *testing.T) {
@@ -279,4 +353,15 @@ func mustDelete(t *testing.T, doc *Document, key string) bool {
 	}
 
 	return deleted
+}
+
+func mustBytes(t *testing.T, doc *Document) []byte {
+	t.Helper()
+
+	b, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes returned error: %v", err)
+	}
+
+	return b
 }

@@ -253,6 +253,23 @@ func (d *Document) Get(key string) (any, bool, error) {
 	return value, true, nil
 }
 
+// Has reports whether a frontmatter key exists.
+func (d *Document) Has(key string) (bool, error) {
+	if key == "" {
+		return false, ErrEmptyKey
+	}
+	if d == nil || !d.hasFrontmatter {
+		return false, nil
+	}
+
+	idx, err := d.findKeyIndex(key)
+	if err != nil {
+		return false, err
+	}
+
+	return idx >= 0, nil
+}
+
 // Set sets or adds a frontmatter key/value.
 func (d *Document) Set(key string, value any) error {
 	if key == "" {
