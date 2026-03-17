@@ -1,0 +1,642 @@
+// Package mdfm provides fast and robust tools to read, manipulate, and update
+// YAML frontmatter in markdown files.
+package mdfm
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	openingDelimiter = "---"
+	closingDelimiter = "---"
+	altClosingMarker = "..."
+
+	frontmatterKVPairWidth = 2
+	bytesBufferSlack       = 64
+
+	lf   = "\n"
+	crlf = "\r\n"
+)
+
+var (
+	// ErrUnclosedFrontmatter is returned when an opening delimiter is present
+	// without a closing delimiter.
+	ErrUnclosedFrontmatter = errors.New("unclosed frontmatter block")
+
+	// ErrFrontmatterNotMapping is returned when parsed frontmatter is valid YAML
+	// but not a top-level mapping.
+	ErrFrontmatterNotMapping = errors.New("frontmatter must be a YAML mapping")
+
+	// ErrEmptyKey is returned when a frontmatter operation receives an empty key.
+	ErrEmptyKey = errors.New("frontmatter key cannot be empty")
+
+	errPathEmpty = errors.New("path cannot be empty")
+)
+
+// Document is a parsed markdown document with optional YAML frontmatter.
+type Document struct {
+	hasFrontmatter bool
+	frontmatter    yaml.Node
+	body           []byte
+	newline        string
+}
+
+// Parse parses markdown bytes into a Document.
+func Parse(content []byte) (*Document, error) {
+	line, next, newline, ok := scanLine(content, 0)
+	if !ok || !isOpeningDelimiter(line) {
+		return &Document{
+			hasFrontmatter: false,
+			body:           slices.Clone(content),
+			newline:        detectPreferredNewline(content),
+		}, nil
+	}
+
+	closeStart, closeEnd, err := findClosingDelimiter(content, next)
+	if err != nil {
+		return nil, err
+	}
+
+	frontmatterRaw := content[next:closeStart]
+	body := slices.Clone(content[closeEnd:])
+
+	doc := &Document{
+		hasFrontmatter: true,
+		frontmatter:    emptyMappingNode(),
+		body:           body,
+		newline:        newline,
+	}
+
+	if len(bytes.TrimSpace(frontmatterRaw)) == 0 {
+		return doc, nil
+	}
+
+	parsedNode, parseErr := parseFrontmatterMapping(frontmatterRaw)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	doc.frontmatter = parsedNode
+
+	return doc, nil
+}
+
+// ParseString parses markdown text into a Document.
+func ParseString(content string) (*Document, error) {
+	return Parse([]byte(content))
+}
+
+// ReadFile reads and parses a markdown file. Symlinks are refused.
+func ReadFile(path string) (*Document, error) {
+	if path == "" {
+		return nil, errPathEmpty
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to read symlink: %s", path)
+	}
+
+	content, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	doc, err := Parse(content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse markdown: %w", err)
+	}
+
+	return doc, nil
+}
+
+// UpdateFile reads a markdown file, applies mutate, and writes back atomically
+// only when bytes change.
+func UpdateFile(path string, mutate func(*Document) error) error {
+	if path == "" {
+		return errPathEmpty
+	}
+
+	original, perm, err := readRegularFile(path)
+	if err != nil {
+		return err
+	}
+
+	doc, err := Parse(original)
+	if err != nil {
+		return fmt.Errorf("failed to parse markdown: %w", err)
+	}
+
+	if err = applyMutation(doc, mutate); err != nil {
+		return err
+	}
+
+	updated, err := doc.Bytes()
+	if err != nil {
+		return fmt.Errorf("failed to serialize document: %w", err)
+	}
+
+	if bytes.Equal(original, updated) {
+		return nil
+	}
+
+	if err = writeFileAtomic(path, updated, perm); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+// HasFrontmatter reports whether the document has a frontmatter section.
+func (d *Document) HasFrontmatter() bool {
+	if d == nil {
+		return false
+	}
+	return d.hasFrontmatter
+}
+
+// Body returns a copy of the markdown body.
+func (d *Document) Body() []byte {
+	if d == nil {
+		return nil
+	}
+	return slices.Clone(d.body)
+}
+
+// SetBody replaces the markdown body.
+func (d *Document) SetBody(body []byte) {
+	if d == nil {
+		return
+	}
+	d.body = slices.Clone(body)
+}
+
+// Frontmatter returns the full frontmatter as a map.
+func (d *Document) Frontmatter() (map[string]any, error) {
+	if d == nil || !d.hasFrontmatter {
+		return map[string]any{}, nil
+	}
+
+	if d.frontmatter.Kind != yaml.MappingNode {
+		return nil, ErrFrontmatterNotMapping
+	}
+
+	if len(d.frontmatter.Content) == 0 {
+		return map[string]any{}, nil
+	}
+
+	result := make(map[string]any, len(d.frontmatter.Content)/frontmatterKVPairWidth)
+	if err := d.frontmatter.Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode frontmatter: %w", err)
+	}
+
+	return result, nil
+}
+
+// SetFrontmatter replaces the full frontmatter map.
+func (d *Document) SetFrontmatter(frontmatter map[string]any) error {
+	if d == nil {
+		return nil
+	}
+
+	var node yaml.Node
+	if err := node.Encode(frontmatter); err != nil {
+		return fmt.Errorf("failed to encode frontmatter: %w", err)
+	}
+
+	mappingNode, err := extractMappingNode(&node)
+	if err != nil {
+		return err
+	}
+
+	d.frontmatter = cloneNode(mappingNode)
+	d.hasFrontmatter = true
+
+	if d.newline == "" {
+		d.newline = lf
+	}
+
+	return nil
+}
+
+// Get returns a frontmatter value by key.
+func (d *Document) Get(key string) (any, bool, error) {
+	if key == "" {
+		return nil, false, ErrEmptyKey
+	}
+	if d == nil || !d.hasFrontmatter {
+		return nil, false, nil
+	}
+
+	idx, err := d.findKeyIndex(key)
+	if err != nil {
+		return nil, false, err
+	}
+	if idx < 0 {
+		return nil, false, nil
+	}
+
+	var value any
+	if err = d.frontmatter.Content[idx+1].Decode(&value); err != nil {
+		return nil, false, fmt.Errorf("failed to decode value for key %q: %w", key, err)
+	}
+
+	return value, true, nil
+}
+
+// Set sets or adds a frontmatter key/value.
+func (d *Document) Set(key string, value any) error {
+	if key == "" {
+		return ErrEmptyKey
+	}
+	if d == nil {
+		return nil
+	}
+
+	d.ensureFrontmatter()
+
+	valueNode, err := nodeFromValue(value)
+	if err != nil {
+		return err
+	}
+
+	idx, err := d.findKeyIndex(key)
+	if err != nil {
+		return err
+	}
+
+	if idx >= 0 {
+		d.frontmatter.Content[idx+1] = valueNode
+		return nil
+	}
+
+	d.frontmatter.Content = append(
+		d.frontmatter.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		valueNode,
+	)
+
+	return nil
+}
+
+// Delete removes a frontmatter key.
+func (d *Document) Delete(key string) (bool, error) {
+	if key == "" {
+		return false, ErrEmptyKey
+	}
+	if d == nil || !d.hasFrontmatter {
+		return false, nil
+	}
+
+	idx, err := d.findKeyIndex(key)
+	if err != nil {
+		return false, err
+	}
+	if idx < 0 {
+		return false, nil
+	}
+
+	d.frontmatter.Content = append(
+		d.frontmatter.Content[:idx],
+		d.frontmatter.Content[idx+2:]...,
+	)
+
+	return true, nil
+}
+
+// Keys returns top-level frontmatter keys in document order.
+func (d *Document) Keys() ([]string, error) {
+	if d == nil || !d.hasFrontmatter {
+		return nil, nil
+	}
+	if d.frontmatter.Kind != yaml.MappingNode {
+		return nil, ErrFrontmatterNotMapping
+	}
+
+	keys := make([]string, 0, len(d.frontmatter.Content)/frontmatterKVPairWidth)
+	for i := 0; i < len(d.frontmatter.Content); i += frontmatterKVPairWidth {
+		keys = append(keys, d.frontmatter.Content[i].Value)
+	}
+
+	return keys, nil
+}
+
+// Bytes serializes the document back to markdown bytes.
+func (d *Document) Bytes() ([]byte, error) {
+	if d == nil {
+		return nil, nil
+	}
+	if !d.hasFrontmatter {
+		return slices.Clone(d.body), nil
+	}
+
+	newline := d.newline
+	if newline == "" {
+		newline = lf
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(len(d.body) + bytesBufferSlack)
+
+	buf.WriteString(openingDelimiter)
+	buf.WriteString(newline)
+
+	if len(d.frontmatter.Content) > 0 {
+		frontmatterBytes, err := marshalFrontmatter(&d.frontmatter)
+		if err != nil {
+			return nil, err
+		}
+
+		if newline == crlf {
+			frontmatterBytes = bytes.ReplaceAll(frontmatterBytes, []byte(lf), []byte(crlf))
+		}
+
+		buf.Write(frontmatterBytes)
+		if !bytes.HasSuffix(frontmatterBytes, []byte(newline)) {
+			buf.WriteString(newline)
+		}
+	}
+
+	buf.WriteString(closingDelimiter)
+	buf.WriteString(newline)
+	buf.Write(d.body)
+
+	return buf.Bytes(), nil
+}
+
+// WriteFile serializes and writes the document atomically with the given
+// file permissions.
+func (d *Document) WriteFile(path string, perm os.FileMode) error {
+	if d == nil {
+		return nil
+	}
+	if path == "" {
+		return errPathEmpty
+	}
+
+	data, err := d.Bytes()
+	if err != nil {
+		return fmt.Errorf("failed to serialize document: %w", err)
+	}
+
+	if err = writeFileAtomic(path, data, perm); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+func (d *Document) ensureFrontmatter() {
+	if d.hasFrontmatter {
+		return
+	}
+	d.hasFrontmatter = true
+	d.frontmatter = emptyMappingNode()
+	if d.newline == "" {
+		d.newline = lf
+	}
+}
+
+func (d *Document) findKeyIndex(key string) (int, error) {
+	if d.frontmatter.Kind != yaml.MappingNode {
+		return -1, ErrFrontmatterNotMapping
+	}
+
+	for i := 0; i < len(d.frontmatter.Content); i += frontmatterKVPairWidth {
+		if d.frontmatter.Content[i].Value == key {
+			return i, nil
+		}
+	}
+
+	return -1, nil
+}
+
+func parseFrontmatterMapping(data []byte) (yaml.Node, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return yaml.Node{}, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
+	}
+
+	mappingNode, err := extractMappingNode(&root)
+	if err != nil {
+		return yaml.Node{}, err
+	}
+
+	return cloneNode(mappingNode), nil
+}
+
+func extractMappingNode(root *yaml.Node) (*yaml.Node, error) {
+	if root == nil {
+		return nil, ErrFrontmatterNotMapping
+	}
+
+	node := root
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			empty := emptyMappingNode()
+			return &empty, nil
+		}
+		node = node.Content[0]
+	}
+
+	if node.Kind != yaml.MappingNode {
+		return nil, ErrFrontmatterNotMapping
+	}
+
+	return node, nil
+}
+
+func nodeFromValue(value any) (*yaml.Node, error) {
+	var node yaml.Node
+	if err := node.Encode(value); err != nil {
+		return nil, fmt.Errorf("failed to encode value: %w", err)
+	}
+
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			empty := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+			return empty, nil
+		}
+		return cloneNodePtr(node.Content[0]), nil
+	}
+
+	return &node, nil
+}
+
+func marshalFrontmatter(mapping *yaml.Node) ([]byte, error) {
+	if mapping == nil {
+		return nil, nil
+	}
+	if mapping.Kind != yaml.MappingNode {
+		return nil, ErrFrontmatterNotMapping
+	}
+
+	bytesOut, err := yaml.Marshal(mapping)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal frontmatter: %w", err)
+	}
+
+	return bytesOut, nil
+}
+
+func findClosingDelimiter(content []byte, start int) (closeStart int, closeEnd int, err error) {
+	for pos := start; pos <= len(content); {
+		line, next, _, ok := scanLine(content, pos)
+		if !ok {
+			break
+		}
+
+		if isClosingDelimiter(line) {
+			return pos, next, nil
+		}
+
+		if next == pos {
+			break
+		}
+		pos = next
+	}
+
+	return 0, 0, ErrUnclosedFrontmatter
+}
+
+func scanLine(content []byte, start int) (line []byte, next int, newline string, ok bool) {
+	if start < 0 || start > len(content) {
+		return nil, 0, "", false
+	}
+	if start == len(content) {
+		return nil, start, "", false
+	}
+
+	for i := start; i < len(content); i++ {
+		if content[i] == '\n' {
+			if i > start && content[i-1] == '\r' {
+				return content[start : i-1], i + 1, crlf, true
+			}
+			return content[start:i], i + 1, lf, true
+		}
+	}
+
+	return content[start:], len(content), "", true
+}
+
+func isOpeningDelimiter(line []byte) bool {
+	return string(bytes.TrimSpace(line)) == openingDelimiter
+}
+
+func isClosingDelimiter(line []byte) bool {
+	trimmed := string(bytes.TrimSpace(line))
+	return trimmed == closingDelimiter || trimmed == altClosingMarker
+}
+
+func detectPreferredNewline(content []byte) string {
+	if bytes.Contains(content, []byte(crlf)) {
+		return crlf
+	}
+	return lf
+}
+
+func emptyMappingNode() yaml.Node {
+	return yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+}
+
+func cloneNodePtr(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	cloned := cloneNode(node)
+	return &cloned
+}
+
+func cloneNode(node *yaml.Node) yaml.Node {
+	if node == nil {
+		return yaml.Node{}
+	}
+
+	cloned := *node
+	if len(node.Content) == 0 {
+		cloned.Content = nil
+		return cloned
+	}
+
+	cloned.Content = make([]*yaml.Node, len(node.Content))
+	for i := range node.Content {
+		child := cloneNode(node.Content[i])
+		cloned.Content[i] = &child
+	}
+
+	return cloned
+}
+
+func readRegularFile(path string) ([]byte, os.FileMode, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, 0, fmt.Errorf("refusing to update symlink: %s", path)
+	}
+
+	content, err := os.ReadFile(path) //nolint:gosec
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return content, info.Mode().Perm(), nil
+}
+
+func applyMutation(doc *Document, mutate func(*Document) error) error {
+	if mutate == nil {
+		return nil
+	}
+
+	if err := mutate(doc); err != nil {
+		return fmt.Errorf("failed to mutate document: %w", err)
+	}
+
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (retErr error) {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, "."+base+".mdfm-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+
+	if err = os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+
+	return nil
+}
