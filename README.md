@@ -34,6 +34,28 @@ It is built to be fast, robust, and correct:
 go get github.com/inful/mdfm
 ```
 
+## Public API
+
+Core parsing and mutation helpers:
+
+- `Parse` and `ParseString` parse markdown content into a `Document`.
+- `Mutate` and `MutateString` parse, mutate, and serialize content in one step.
+- `ReadFile` parses a markdown file and refuses symlinks.
+- `UpdateFile` mutates a markdown file atomically and skips the write when bytes are unchanged.
+
+`Document` accessors and mutation methods:
+
+- `HasFrontmatter`, `Body`, `SetBody`, `Bytes`, and `WriteFile` work with whole-document state.
+- `Frontmatter` and `SetFrontmatter` read or replace the full top-level frontmatter mapping.
+- `Get`, `Has`, `GetString`, `Set`, `SetString`, `Delete`, and `Keys` provide top-level key operations.
+
+Relevant exported errors:
+
+- `ErrUnclosedFrontmatter` when an opening delimiter has no closing delimiter.
+- `ErrFrontmatterNotMapping` when frontmatter is valid YAML but not a top-level mapping.
+- `ErrDuplicateFrontmatterKey` when a mapping contains duplicate keys.
+- `ErrEmptyKey` when a semantic key operation receives an empty key.
+
 ## Library Usage
 
 ```go

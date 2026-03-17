@@ -1,5 +1,9 @@
-// Package mdfm provides fast and robust tools to read, manipulate, and update
-// YAML frontmatter in markdown files.
+// Package mdfm provides tools to parse, inspect, mutate, and persist YAML
+// frontmatter in markdown files.
+//
+// The package models frontmatter as a top-level YAML mapping, preserves the
+// document newline style when rewriting content, rejects duplicate mapping
+// keys during parse, and refuses symlink-based file operations.
 package mdfm
 
 import (
@@ -46,6 +50,9 @@ var (
 )
 
 // Document is a parsed markdown document with optional YAML frontmatter.
+//
+// A Document preserves the original markdown body and newline style. Its
+// semantic frontmatter operations work only on top-level mapping keys.
 type Document struct {
 	hasFrontmatter bool
 	frontmatter    yaml.Node
@@ -54,6 +61,10 @@ type Document struct {
 }
 
 // Parse parses markdown bytes into a Document.
+//
+// Frontmatter is recognized only when the document starts with an opening
+// frontmatter delimiter on the first line. Parsed frontmatter must be a YAML
+// mapping with unique mapping keys.
 func Parse(content []byte) (*Document, error) {
 	line, next, newline, ok := scanLine(content, 0)
 	if !ok || !isOpeningDelimiter(line) {
@@ -83,9 +94,9 @@ func Parse(content []byte) (*Document, error) {
 		return doc, nil
 	}
 
-	parsedNode, parseErr := parseFrontmatterMapping(frontmatterRaw)
-	if parseErr != nil {
-		return nil, parseErr
+	parsedNode, err := parseFrontmatterMapping(frontmatterRaw)
+	if err != nil {
+		return nil, err
 	}
 	doc.frontmatter = parsedNode
 
@@ -93,12 +104,18 @@ func Parse(content []byte) (*Document, error) {
 }
 
 // ParseString parses markdown text into a Document.
+//
+// It has the same parsing rules and error behavior as Parse.
 func ParseString(content string) (*Document, error) {
 	return Parse([]byte(content))
 }
 
-// Mutate parses markdown bytes, applies mutate, and serializes back.
-// It returns the updated bytes and whether the content changed.
+// Mutate parses markdown bytes, applies mutate, and serializes the document
+// back to markdown.
+//
+// It returns the updated bytes, whether the serialized content changed, and any
+// parse, mutation, or serialization error. A nil mutate callback is treated as
+// a no-op.
 func Mutate(content []byte, mutate func(*Document) error) ([]byte, bool, error) {
 	original := slices.Clone(content)
 
@@ -119,8 +136,10 @@ func Mutate(content []byte, mutate func(*Document) error) ([]byte, bool, error) 
 	return updated, !bytes.Equal(original, updated), nil
 }
 
-// MutateString parses markdown text, applies mutate, and serializes back.
-// It returns the updated text and whether the content changed.
+// MutateString parses markdown text, applies mutate, and serializes the
+// document back to markdown text.
+//
+// It has the same behavior as Mutate but operates on strings.
 func MutateString(content string, mutate func(*Document) error) (string, bool, error) {
 	updated, changed, err := Mutate([]byte(content), mutate)
 	if err != nil {
@@ -130,7 +149,10 @@ func MutateString(content string, mutate func(*Document) error) (string, bool, e
 	return string(updated), changed, nil
 }
 
-// ReadFile reads and parses a markdown file. Symlinks are refused.
+// ReadFile reads and parses a markdown file.
+//
+// Existing symlinks are refused. Parse errors are wrapped with additional file
+// context.
 func ReadFile(path string) (*Document, error) {
 	if path == "" {
 		return nil, errPathEmpty
@@ -157,8 +179,10 @@ func ReadFile(path string) (*Document, error) {
 	return doc, nil
 }
 
-// UpdateFile reads a markdown file, applies mutate, and writes back atomically
-// only when bytes change.
+// UpdateFile reads a markdown file, applies mutate, and writes it back
+// atomically only when the serialized bytes change.
+//
+// Existing symlinks are refused. A nil mutate callback is treated as a no-op.
 func UpdateFile(path string, mutate func(*Document) error) error {
 	if path == "" {
 		return errPathEmpty
@@ -195,6 +219,8 @@ func UpdateFile(path string, mutate func(*Document) error) error {
 }
 
 // HasFrontmatter reports whether the document has a frontmatter section.
+//
+// It returns false for a nil receiver.
 func (d *Document) HasFrontmatter() bool {
 	if d == nil {
 		return false
@@ -203,6 +229,8 @@ func (d *Document) HasFrontmatter() bool {
 }
 
 // Body returns a copy of the markdown body.
+//
+// It returns nil for a nil receiver.
 func (d *Document) Body() []byte {
 	if d == nil {
 		return nil
@@ -211,6 +239,9 @@ func (d *Document) Body() []byte {
 }
 
 // SetBody replaces the markdown body.
+//
+// The provided bytes are copied before they are stored. It is a no-op for a
+// nil receiver.
 func (d *Document) SetBody(body []byte) {
 	if d == nil {
 		return
@@ -218,7 +249,10 @@ func (d *Document) SetBody(body []byte) {
 	d.body = slices.Clone(body)
 }
 
-// Frontmatter returns the full frontmatter as a map.
+// Frontmatter returns the full frontmatter as a decoded map.
+//
+// It returns an empty map when the document has no frontmatter or the receiver
+// is nil.
 func (d *Document) Frontmatter() (map[string]any, error) {
 	if d == nil || !d.hasFrontmatter {
 		return map[string]any{}, nil
@@ -240,7 +274,10 @@ func (d *Document) Frontmatter() (map[string]any, error) {
 	return result, nil
 }
 
-// SetFrontmatter replaces the full frontmatter map.
+// SetFrontmatter replaces the entire top-level frontmatter mapping.
+//
+// It creates frontmatter when needed and preserves the document newline style.
+// It is a no-op for a nil receiver.
 func (d *Document) SetFrontmatter(frontmatter map[string]any) error {
 	if d == nil {
 		return nil
@@ -266,7 +303,10 @@ func (d *Document) SetFrontmatter(frontmatter map[string]any) error {
 	return nil
 }
 
-// Get returns a frontmatter value by key.
+// Get returns the decoded top-level frontmatter value stored at key.
+//
+// The returned boolean reports whether key was present. Missing keys and
+// documents without frontmatter both return found=false.
 func (d *Document) Get(key string) (any, bool, error) {
 	if key == "" {
 		return nil, false, ErrEmptyKey
@@ -291,7 +331,9 @@ func (d *Document) Get(key string) (any, bool, error) {
 	return value, true, nil
 }
 
-// Has reports whether a frontmatter key exists.
+// Has reports whether a top-level frontmatter key exists.
+//
+// Documents without frontmatter return false, nil.
 func (d *Document) Has(key string) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
@@ -308,7 +350,10 @@ func (d *Document) Has(key string) (bool, error) {
 	return ok, nil
 }
 
-// GetString returns a frontmatter string value by key.
+// GetString returns the string value stored at a top-level frontmatter key.
+//
+// It returns found=true with an error when the key exists but does not decode
+// to a Go string.
 func (d *Document) GetString(key string) (string, bool, error) {
 	value, ok, err := d.Get(key)
 	if err != nil || !ok {
@@ -323,12 +368,15 @@ func (d *Document) GetString(key string) (string, bool, error) {
 	return stringValue, true, nil
 }
 
-// SetString sets or adds a frontmatter string key/value.
+// SetString sets or adds a top-level frontmatter string key/value pair.
 func (d *Document) SetString(key, value string) error {
 	return d.Set(key, value)
 }
 
-// Set sets or adds a frontmatter key/value.
+// Set sets or adds a top-level frontmatter key/value pair.
+//
+// It creates an empty frontmatter mapping when the document does not already
+// have one. It is a no-op for a nil receiver.
 func (d *Document) Set(key string, value any) error {
 	if key == "" {
 		return ErrEmptyKey
@@ -347,7 +395,10 @@ func (d *Document) Set(key string, value any) error {
 	return d.upsertValueNode(key, valueNode)
 }
 
-// Delete removes a frontmatter key.
+// Delete removes a top-level frontmatter key.
+//
+// It reports whether the key was removed. Documents without frontmatter return
+// false, nil.
 func (d *Document) Delete(key string) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
@@ -370,6 +421,9 @@ func (d *Document) Delete(key string) (bool, error) {
 }
 
 // Keys returns top-level frontmatter keys in document order.
+//
+// It returns nil, nil when the document has no frontmatter or the receiver is
+// nil.
 func (d *Document) Keys() ([]string, error) {
 	if d == nil || !d.hasFrontmatter {
 		return nil, nil
@@ -387,6 +441,9 @@ func (d *Document) Keys() ([]string, error) {
 }
 
 // Bytes serializes the document back to markdown bytes.
+//
+// Documents without frontmatter serialize to a copy of the body. A nil receiver
+// returns nil, nil.
 func (d *Document) Bytes() ([]byte, error) {
 	if d == nil {
 		return nil, nil
@@ -407,6 +464,8 @@ func (d *Document) Bytes() ([]byte, error) {
 	buf.WriteString(newline)
 
 	if len(d.frontmatter.Content) > 0 {
+		// yaml.Marshal always emits LF line endings, so normalize only after
+		// marshaling to preserve the document's preferred newline style.
 		frontmatterBytes, err := marshalFrontmatter(&d.frontmatter)
 		if err != nil {
 			return nil, err
@@ -429,8 +488,9 @@ func (d *Document) Bytes() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// WriteFile serializes and writes the document atomically with the given
-// file permissions.
+// WriteFile serializes the document and writes it atomically with perm.
+//
+// Existing symlinks are refused. It is a no-op for a nil receiver.
 func (d *Document) WriteFile(path string, perm os.FileMode) error {
 	if d == nil {
 		return nil
@@ -536,6 +596,8 @@ func parseFrontmatterMapping(data []byte) (yaml.Node, error) {
 	if err != nil {
 		return yaml.Node{}, err
 	}
+	// Reject duplicate keys before the document escapes into the public API so
+	// every accessor sees the same unambiguous data model.
 	if err := validateUniqueMappingKeys(mappingNode); err != nil {
 		return yaml.Node{}, err
 	}
@@ -806,6 +868,8 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (retErr error) 
 		}
 	}()
 
+	// Write and sync the temporary file before renaming so the destination is
+	// replaced atomically with fully flushed contents.
 	if _, err = tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return err
