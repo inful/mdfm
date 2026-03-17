@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const testValueNew = "new"
+const (
+	testValueNew   = "new"
+	testValueHello = "hello"
+)
 
 func TestParseWithoutFrontmatter(t *testing.T) {
 	t.Parallel()
@@ -52,7 +55,7 @@ func TestParseWithFrontmatterAndBody(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected title key")
 	}
-	if title != "hello" {
+	if title != testValueHello {
 		t.Fatalf("unexpected title: %#v", title)
 	}
 
@@ -546,6 +549,71 @@ func TestIntegrationRemoveThenAddFlow(t *testing.T) {
 	}
 	if !ok || fingerprint != testValueNew {
 		t.Fatalf("unexpected fingerprint: %q (ok=%v)", fingerprint, ok)
+	}
+}
+
+func TestParseString(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\ntitle: hello\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	title, ok, err := doc.GetString("title")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok || title != testValueHello {
+		t.Fatalf("unexpected title: %q (ok=%v)", title, ok)
+	}
+}
+
+func TestSetBody(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\ntitle: hello\n---\nbody\n"))
+	doc.SetBody([]byte("updated\n"))
+
+	if got := string(doc.Body()); got != "updated\n" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+func TestFrontmatterReturnsMap(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("---\ntitle: hello\ncount: 2\n---\nbody\n"))
+
+	frontmatter, err := doc.Frontmatter()
+	if err != nil {
+		t.Fatalf("Frontmatter returned error: %v", err)
+	}
+	if frontmatter["title"] != testValueHello {
+		t.Fatalf("unexpected title: %#v", frontmatter["title"])
+	}
+	if frontmatter["count"] != 2 {
+		t.Fatalf("unexpected count: %#v", frontmatter["count"])
+	}
+}
+
+func TestWriteFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	doc := mustParse(t, []byte("---\ntitle: hello\n---\nbody\n"))
+
+	if err := doc.WriteFile(path, 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(content) != "---\ntitle: hello\n---\nbody\n" {
+		t.Fatalf("unexpected written content: %q", string(content))
 	}
 }
 

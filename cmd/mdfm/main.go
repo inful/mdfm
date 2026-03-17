@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -25,26 +26,34 @@ func (r *repeatedFlag) Set(value string) error {
 }
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
 	var setPairs repeatedFlag
 	var deleteKeys repeatedFlag
 	var showVersion bool
 
-	flag.Var(&setPairs, "set", "Set frontmatter key=value (repeatable)")
-	flag.Var(&deleteKeys, "delete", "Delete frontmatter key (repeatable)")
-	flag.BoolVar(&showVersion, "version", false, "Show version")
-	flag.Parse()
+	flagSet := flag.NewFlagSet("mdfm", flag.ContinueOnError)
+	flagSet.SetOutput(stderr)
+	flagSet.Var(&setPairs, "set", "Set frontmatter key=value (repeatable)")
+	flagSet.Var(&deleteKeys, "delete", "Delete frontmatter key (repeatable)")
+	flagSet.BoolVar(&showVersion, "version", false, "Show version")
+	if err := flagSet.Parse(args); err != nil {
+		return 1
+	}
 
 	if showVersion {
-		_, _ = fmt.Fprintln(os.Stdout, version)
-		return
+		_, _ = fmt.Fprintln(stdout, version)
+		return 0
 	}
 
-	if flag.NArg() != 1 {
-		_, _ = fmt.Fprintf(os.Stderr, "usage: %s [--set key=value] [--delete key] <file>\n", os.Args[0])
-		os.Exit(exitUsage)
+	if flagSet.NArg() != 1 {
+		_, _ = fmt.Fprintf(stderr, "usage: %s [--set key=value] [--delete key] <file>\n", flagSet.Name())
+		return exitUsage
 	}
 
-	path := flag.Arg(0)
+	path := flagSet.Arg(0)
 
 	err := mdfm.UpdateFile(path, func(doc *mdfm.Document) error {
 		for _, pair := range setPairs {
@@ -66,7 +75,9 @@ func main() {
 		return nil
 	})
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
 	}
+
+	return 0
 }
