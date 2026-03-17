@@ -92,6 +92,39 @@ func ParseString(content string) (*Document, error) {
 	return Parse([]byte(content))
 }
 
+// Mutate parses markdown bytes, applies mutate, and serializes back.
+// It returns the updated bytes and whether the content changed.
+func Mutate(content []byte, mutate func(*Document) error) ([]byte, bool, error) {
+	original := slices.Clone(content)
+
+	doc, err := Parse(content)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to parse markdown: %w", err)
+	}
+
+	if err = applyMutation(doc, mutate); err != nil {
+		return nil, false, err
+	}
+
+	updated, err := doc.Bytes()
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to serialize document: %w", err)
+	}
+
+	return updated, !bytes.Equal(original, updated), nil
+}
+
+// MutateString parses markdown text, applies mutate, and serializes back.
+// It returns the updated text and whether the content changed.
+func MutateString(content string, mutate func(*Document) error) (string, bool, error) {
+	updated, changed, err := Mutate([]byte(content), mutate)
+	if err != nil {
+		return "", false, err
+	}
+
+	return string(updated), changed, nil
+}
+
 // ReadFile reads and parses a markdown file. Symlinks are refused.
 func ReadFile(path string) (*Document, error) {
 	if path == "" {
@@ -268,6 +301,26 @@ func (d *Document) Has(key string) (bool, error) {
 	}
 
 	return idx >= 0, nil
+}
+
+// GetString returns a frontmatter string value by key.
+func (d *Document) GetString(key string) (string, bool, error) {
+	value, ok, err := d.Get(key)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+
+	stringValue, typeOK := value.(string)
+	if !typeOK {
+		return "", true, fmt.Errorf("value for key %q is %T, not string", key, value)
+	}
+
+	return stringValue, true, nil
+}
+
+// SetString sets or adds a frontmatter string key/value.
+func (d *Document) SetString(key, value string) error {
+	return d.Set(key, value)
 }
 
 // Set sets or adds a frontmatter key/value.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -337,6 +338,116 @@ func TestEmptyKeyValidation(t *testing.T) {
 	_, err = doc.Delete("")
 	if !errors.Is(err, ErrEmptyKey) {
 		t.Fatalf("expected ErrEmptyKey from Delete, got: %v", err)
+	}
+
+	_, _, err = doc.GetString("")
+	if !errors.Is(err, ErrEmptyKey) {
+		t.Fatalf("expected ErrEmptyKey from GetString, got: %v", err)
+	}
+
+	if err = doc.SetString("", "x"); !errors.Is(err, ErrEmptyKey) {
+		t.Fatalf("expected ErrEmptyKey from SetString, got: %v", err)
+	}
+}
+
+func TestGetSetStringHelpers(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("body\n"))
+	if err := doc.SetString("uid", "abc-123"); err != nil {
+		t.Fatalf("SetString returned error: %v", err)
+	}
+
+	uid, ok, err := doc.GetString("uid")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected uid key")
+	}
+	if uid != "abc-123" {
+		t.Fatalf("unexpected uid: %q", uid)
+	}
+
+	missing, ok, err := doc.GetString("missing")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected missing key to not exist")
+	}
+	if missing != "" {
+		t.Fatalf("expected empty string for missing key")
+	}
+}
+
+func TestGetStringTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParse(t, []byte("body\n"))
+	mustSet(t, doc, "count", 1)
+
+	_, ok, err := doc.GetString("count")
+	if err == nil {
+		t.Fatalf("expected type mismatch error")
+	}
+	if !ok {
+		t.Fatalf("expected key to be reported as present on type mismatch")
+	}
+}
+
+func TestMutateContentHelpers(t *testing.T) {
+	t.Parallel()
+
+	content := []byte("---\ntitle: old\n---\nbody\n")
+	updated, changed, err := Mutate(content, func(doc *Document) error {
+		return doc.SetString("title", "new")
+	})
+	if err != nil {
+		t.Fatalf("Mutate returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected content to change")
+	}
+
+	updatedDoc := mustParse(t, updated)
+	title, ok, err := updatedDoc.GetString("title")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if !ok || title != "new" {
+		t.Fatalf("unexpected title: %q (ok=%v)", title, ok)
+	}
+
+	second, changed, err := Mutate(updated, func(doc *Document) error {
+		return doc.SetString("title", "new")
+	})
+	if err != nil {
+		t.Fatalf("Mutate returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected no-op mutation to report changed=false")
+	}
+	if !bytes.Equal(second, updated) {
+		t.Fatalf("expected no-op mutation to preserve bytes")
+	}
+}
+
+func TestMutateStringHelper(t *testing.T) {
+	t.Parallel()
+
+	content := "---\r\ntitle: old\r\n---\r\nbody\r\n"
+	updated, changed, err := MutateString(content, func(doc *Document) error {
+		return doc.SetString("title", "new")
+	})
+	if err != nil {
+		t.Fatalf("MutateString returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected content to change")
+	}
+	if !strings.Contains(updated, "\r\n") {
+		t.Fatalf("expected CRLF to be preserved")
 	}
 }
 

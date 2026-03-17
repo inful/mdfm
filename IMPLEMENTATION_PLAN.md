@@ -30,7 +30,7 @@ Status legend: `todo`, `in-progress`, `done`.
   - Add idempotency tests for repeated operations.
   - Add LF/CRLF and malformed frontmatter edge case tests.
 
-- [ ] **3. API Surface Review and Additions** (`todo`)
+- [x] **3. API Surface Review and Additions** (`done`)
   - Confirm minimal API for downstream consumers.
   - Add focused helpers only where they reduce consumer boilerplate.
   - Keep behavior deterministic and backwards-compatible where possible.
@@ -73,3 +73,5 @@ Status legend: `todo`, `in-progress`, `done`.
   updates in README.
 - 2026-03-17: Completed contract coverage for malformed YAML frontmatter and
   newline preservation during semantic mutations (`LF` and `CRLF`).
+- 2026-03-17: Added minimal downstream-focused helpers: `SetString`,
+  `GetString`, `Mutate`, and `MutateString`.
