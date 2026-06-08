@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780288210438,
+  "lastUpdate": 1780892974646,
   "repoUrl": "https://github.com/inful/mdfm",
   "entries": {
     "mdfm Go Benchmarks": [
@@ -986,6 +986,76 @@ window.BENCHMARK_DATA = {
             "value": 234,
             "unit": "allocs/op",
             "extra": "34430 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jone Marius Vignes",
+            "username": "inful",
+            "email": "inful@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "Jone Marius Vignes",
+            "username": "inful",
+            "email": "inful@users.noreply.github.com"
+          },
+          "id": "62f0e22ac4b575edc04b627e1bb216267dca0144",
+          "message": "docs: clarify public API behavior",
+          "timestamp": "2026-03-17T21:28:41Z",
+          "url": "https://github.com/inful/mdfm/commit/62f0e22ac4b575edc04b627e1bb216267dca0144"
+        },
+        "date": 1780892974355,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkParse",
+            "value": 19817,
+            "unit": "ns/op\t   37496 B/op\t     154 allocs/op",
+            "extra": "65456 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParse - ns/op",
+            "value": 19817,
+            "unit": "ns/op",
+            "extra": "65456 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParse - B/op",
+            "value": 37496,
+            "unit": "B/op",
+            "extra": "65456 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParse - allocs/op",
+            "value": 154,
+            "unit": "allocs/op",
+            "extra": "65456 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes",
+            "value": 32116,
+            "unit": "ns/op\t   66372 B/op\t     234 allocs/op",
+            "extra": "36768 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes - ns/op",
+            "value": 32116,
+            "unit": "ns/op",
+            "extra": "36768 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes - B/op",
+            "value": 66372,
+            "unit": "B/op",
+            "extra": "36768 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes - allocs/op",
+            "value": 234,
+            "unit": "allocs/op",
+            "extra": "36768 times\n4 procs"
           }
         ]
       }
