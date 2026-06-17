@@ -68,7 +68,7 @@ func TestRunUpdatesFile(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := run([]string{"--set", "title=new", "--delete", "draft", path}, stdout, stderr)
+	exitCode := run([]string{setFlag, "title=new", "--delete", "draft", path}, stdout, stderr)
 
 	if exitCode != 0 {
 		t.Fatalf("unexpected exit code: %d, stderr=%q", exitCode, stderr.String())
@@ -101,7 +101,7 @@ func TestRunInvalidSetValue(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := run([]string{"--set", "invalid", path}, stdout, stderr)
+	exitCode := run([]string{setFlag, "invalid", path}, stdout, stderr)
 
 	if exitCode != 1 {
 		t.Fatalf("unexpected exit code: %d", exitCode)
@@ -123,7 +123,7 @@ func TestRunDuplicateKeyFrontmatter(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := run([]string{"--set", "title=new", path}, stdout, stderr)
+	exitCode := run([]string{setFlag, "title=new", path}, stdout, stderr)
 
 	if exitCode != 1 {
 		t.Fatalf("unexpected exit code: %d, stderr=%q", exitCode, stderr.String())
@@ -144,5 +144,69 @@ func TestRunDuplicateKeyFrontmatter(t *testing.T) {
 	}
 	if !bytes.Equal(content, original) {
 		t.Fatalf("expected file content to remain unchanged, got %q", string(content))
+	}
+}
+
+// TestRunUnknownFlag covers the flagSet.Parse error path: an unknown flag
+// causes the flag package to write an error to stderr and run returns 1.
+func TestRunUnknownFlag(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := run([]string{"--bogus"}, stdout, stderr)
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+// TestRunSetEmptyKey covers the doc.Set error path inside the mutation
+// callback: an empty key (e.g. `--set =value`) produces an ErrEmptyKey that
+// is wrapped and surfaced to the user.
+func TestRunSetEmptyKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("body\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := run([]string{setFlag, "=value", path}, stdout, stderr)
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d, stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "frontmatter key cannot be empty") {
+		t.Fatalf("expected empty-key error, got %q", stderr.String())
+	}
+}
+
+// TestRunDeleteEmptyKey covers the doc.Delete error path: an empty key
+// produces an ErrEmptyKey that is wrapped and surfaced.
+func TestRunDeleteEmptyKey(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("---\ntitle: x\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := run([]string{"--delete", "", path}, stdout, stderr)
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d, stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "frontmatter key cannot be empty") {
+		t.Fatalf("expected empty-key error, got %q", stderr.String())
 	}
 }

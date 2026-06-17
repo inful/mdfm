@@ -12,7 +12,11 @@ import (
 
 var version = "dev"
 
-const exitUsage = 2
+const (
+	exitUsage = 2
+
+	setFlag = "--set"
+)
 
 type repeatedFlag []string
 
@@ -49,7 +53,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if flagSet.NArg() != 1 {
-		_, _ = fmt.Fprintf(stderr, "usage: %s [--set key=value] [--delete key] <file>\n", flagSet.Name())
+		_, _ = fmt.Fprintf(stderr, "usage: %s [%s key=value] [--delete key] <file>\n", flagSet.Name(), setFlag)
 		return exitUsage
 	}
 
@@ -59,7 +63,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		for _, pair := range setPairs {
 			key, value, ok := strings.Cut(pair, "=")
 			if !ok {
-				return fmt.Errorf("invalid --set value %q, expected key=value", pair)
+				return fmt.Errorf("invalid %s value %q, expected key=value", setFlag, pair)
 			}
 			if err := doc.Set(strings.TrimSpace(key), strings.TrimSpace(value)); err != nil {
 				return err

@@ -28,6 +28,8 @@ const (
 
 	lf   = "\n"
 	crlf = "\r\n"
+
+	yamlStringTag = "!!str"
 )
 
 var (
@@ -283,8 +285,8 @@ func (d *Document) SetFrontmatter(frontmatter map[string]any) error {
 		return nil
 	}
 
-	var node yaml.Node
-	if err := node.Encode(frontmatter); err != nil {
+	node, err := encodeYAMLNode(frontmatter)
+	if err != nil {
 		return fmt.Errorf("failed to encode frontmatter: %w", err)
 	}
 
@@ -293,7 +295,12 @@ func (d *Document) SetFrontmatter(frontmatter map[string]any) error {
 		return err
 	}
 
-	d.frontmatter = cloneNode(mappingNode)
+	// Struct-copy the mapping node rather than deep-cloning it. The Content
+	// slice header in the copy still references the same heap-allocated array
+	// as the original, which the Document now keeps alive through its slice
+	// chain. yaml.v3's Encode already produced an independent snapshot of the
+	// caller's map, so the Document is fully decoupled from it.
+	d.frontmatter = *mappingNode
 	d.hasFrontmatter = true
 
 	if d.newline == "" {
@@ -306,7 +313,8 @@ func (d *Document) SetFrontmatter(frontmatter map[string]any) error {
 // Get returns the decoded top-level frontmatter value stored at key.
 //
 // The returned boolean reports whether key was present. Missing keys and
-// documents without frontmatter both return found=false.
+// documents without frontmatter both return found=false. A nil receiver
+// behaves like a document without frontmatter and returns found=false, nil.
 func (d *Document) Get(key string) (any, bool, error) {
 	if key == "" {
 		return nil, false, ErrEmptyKey
@@ -333,7 +341,7 @@ func (d *Document) Get(key string) (any, bool, error) {
 
 // Has reports whether a top-level frontmatter key exists.
 //
-// Documents without frontmatter return false, nil.
+// Documents without frontmatter and a nil receiver both return false, nil.
 func (d *Document) Has(key string) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
@@ -353,7 +361,8 @@ func (d *Document) Has(key string) (bool, error) {
 // GetString returns the string value stored at a top-level frontmatter key.
 //
 // It returns found=true with an error when the key exists but does not decode
-// to a Go string.
+// to a Go string. A nil receiver behaves like a document without frontmatter
+// and returns found=false, nil.
 func (d *Document) GetString(key string) (string, bool, error) {
 	value, ok, err := d.Get(key)
 	if err != nil || !ok {
@@ -397,8 +406,8 @@ func (d *Document) Set(key string, value any) error {
 
 // Delete removes a top-level frontmatter key.
 //
-// It reports whether the key was removed. Documents without frontmatter return
-// false, nil.
+// It reports whether the key was removed. Documents without frontmatter and a
+// nil receiver both return false, nil.
 func (d *Document) Delete(key string) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
@@ -574,7 +583,7 @@ func (d *Document) upsertValueNode(key string, valueNode *yaml.Node) error {
 func (d *Document) appendKeyValueNode(key string, valueNode *yaml.Node) {
 	d.frontmatter.Content = append(
 		d.frontmatter.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: yamlStringTag, Value: key},
 		valueNode,
 	)
 }
@@ -602,7 +611,11 @@ func parseFrontmatterMapping(data []byte) (yaml.Node, error) {
 		return yaml.Node{}, err
 	}
 
-	return cloneNode(mappingNode), nil
+	// Return a struct copy of the mapping node. The Content slice header in
+	// the copy still references the same heap-allocated array as the original
+	// (so the children remain reachable through the Document's slice chain),
+	// avoiding a deep clone of every node in the frontmatter.
+	return *mappingNode, nil
 }
 
 func validateUniqueMappingKeys(node *yaml.Node) error {
@@ -660,6 +673,14 @@ func mappingKeyIdentity(node *yaml.Node) (string, error) {
 		return "", fmt.Errorf("%w: <nil>", ErrDuplicateFrontmatterKey)
 	}
 
+	// Scalar keys are the overwhelming common case. The Value is already a
+	// canonical string for equality; yaml.Marshal would re-encode it
+	// (allocating a new emitter, buffer, and string each time) for no
+	// benefit. Complex keys fall back to Marshal.
+	if node.Kind == yaml.ScalarNode {
+		return node.Value, nil
+	}
+
 	encoded, err := yaml.Marshal(node)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode frontmatter key: %w", err)
@@ -706,8 +727,8 @@ func extractMappingNode(root *yaml.Node) (*yaml.Node, error) {
 }
 
 func nodeFromValue(value any) (*yaml.Node, error) {
-	var node yaml.Node
-	if err := node.Encode(value); err != nil {
+	node, err := encodeYAMLNode(value)
+	if err != nil {
 		return nil, fmt.Errorf("failed to encode value: %w", err)
 	}
 
@@ -716,10 +737,32 @@ func nodeFromValue(value any) (*yaml.Node, error) {
 			empty := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
 			return empty, nil
 		}
-		return cloneNodePtr(node.Content[0]), nil
+		// The DocumentNode wrapper is created by yaml.v3 around every encoded
+		// value. Its Content array is heap-allocated and the returned node is
+		// the only reference that outlives this function, so Go's escape
+		// analysis keeps the local `node` (and its Content slice) alive.
+		// Returning the inner pointer avoids a deep clone of the value.
+		return node.Content[0], nil
 	}
 
 	return &node, nil
+}
+
+// encodeYAMLNode encodes v into a yaml.Node. yaml.v3 panics rather than
+// returning an error for types it cannot encode (functions, channels, unsafe
+// pointers); this helper recovers that panic so public callers can rely on
+// the normal error-return contract.
+func encodeYAMLNode(v any) (node yaml.Node, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+
+	if encodeErr := node.Encode(v); encodeErr != nil {
+		return yaml.Node{}, encodeErr
+	}
+	return node, nil
 }
 
 func marshalFrontmatter(mapping *yaml.Node) ([]byte, error) {
@@ -779,12 +822,12 @@ func scanLine(content []byte, start int) (line []byte, next int, newline string,
 }
 
 func isOpeningDelimiter(line []byte) bool {
-	return string(bytes.TrimSpace(line)) == openingDelimiter
+	return bytes.Equal(bytes.TrimSpace(line), []byte(openingDelimiter))
 }
 
 func isClosingDelimiter(line []byte) bool {
-	trimmed := string(bytes.TrimSpace(line))
-	return trimmed == closingDelimiter || trimmed == altClosingMarker
+	trimmed := bytes.TrimSpace(line)
+	return bytes.Equal(trimmed, []byte(closingDelimiter)) || bytes.Equal(trimmed, []byte(altClosingMarker))
 }
 
 func detectPreferredNewline(content []byte) string {
@@ -796,34 +839,6 @@ func detectPreferredNewline(content []byte) string {
 
 func emptyMappingNode() yaml.Node {
 	return yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-}
-
-func cloneNodePtr(node *yaml.Node) *yaml.Node {
-	if node == nil {
-		return nil
-	}
-	cloned := cloneNode(node)
-	return &cloned
-}
-
-func cloneNode(node *yaml.Node) yaml.Node {
-	if node == nil {
-		return yaml.Node{}
-	}
-
-	cloned := *node
-	if len(node.Content) == 0 {
-		cloned.Content = nil
-		return cloned
-	}
-
-	cloned.Content = make([]*yaml.Node, len(node.Content))
-	for i := range node.Content {
-		child := cloneNode(node.Content[i])
-		cloned.Content[i] = &child
-	}
-
-	return cloned
 }
 
 func readRegularFile(path string) ([]byte, os.FileMode, error) {
