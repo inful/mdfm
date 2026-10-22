@@ -27,11 +27,11 @@ const (
 //  1. Nil-receiver safety for every public method on *Document. Each public
 //     accessor and mutator must tolerate a nil *Document without panicking.
 //  2. Untested branches on the public surface (empty frontmatter blocks,
-//     non-mapping frontmatter, file errors, Mutate error paths).
+//     file errors, Mutate error paths).
 //
 // The tests use the unexported `Document` fields when needed to construct
-// pathological inputs (e.g., a Document whose frontmatter node is a sequence).
-// They are co-located with the package so this access is permitted.
+// pathological inputs (e.g., a Document whose frontmatter node yaml.v3 cannot
+// marshal). They are co-located with the package so this access is permitted.
 
 // --- Nil-receiver safety -------------------------------------------------
 
@@ -325,7 +325,7 @@ func TestUpdateFileRefusesFIFO(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected UpdateFile to refuse a FIFO")
 		}
-		if !strings.Contains(err.Error(), "refusing to update non-regular file") {
+		if !strings.Contains(err.Error(), "refusing to read non-regular file") {
 			t.Fatalf("expected non-regular file refusal, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -353,7 +353,7 @@ func TestUpdateFileRefusesSymlink(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when updating symlink")
 	}
-	if !strings.Contains(err.Error(), "refusing to update symlink") {
+	if !strings.Contains(err.Error(), "refusing to read symlink") {
 		t.Fatalf("expected symlink refusal, got %v", err)
 	}
 }
@@ -654,28 +654,6 @@ func TestBytesEmptyFrontmatter(t *testing.T) {
 	}
 }
 
-// TestBytesNonMappingFrontmatter is the one place the non-mapping guard is
-// pinned. Parse rejects a non-mapping frontmatter and SetFrontmatter only
-// accepts a Go map, so no caller outside this package can reach the state; the
-// check stays as a defensive guard for in-package changes.
-func TestBytesNonMappingFrontmatter(t *testing.T) {
-	t.Parallel()
-
-	doc := &Document{
-		hasFrontmatter: true,
-		frontmatter: yaml.Node{
-			Kind: yaml.SequenceNode,
-			Content: []*yaml.Node{
-				{Kind: yaml.ScalarNode, Tag: yamlStringTag, Value: "item"},
-			},
-		},
-	}
-	_, err := doc.Bytes()
-	if !errors.Is(err, ErrFrontmatterNotMapping) {
-		t.Fatalf("expected ErrFrontmatterNotMapping, got %v", err)
-	}
-}
-
 // TestBytesSeedsNewline covers the `if newline == ""` branch in Bytes that
 // fires when a Document has frontmatter but no observed body (so Parse never
 // ran). This can only happen for a manually-constructed Document.
@@ -720,16 +698,15 @@ func TestWriteFileCreatesNew(t *testing.T) {
 	}
 }
 
-// TestWriteFileBytesError covers the Bytes error path. A manually-constructed
-// Document with a non-mapping frontmatter that has content cannot be
-// serialized.
+// TestWriteFileBytesError covers the Bytes error path. A node with no Kind but
+// with content is rejected by yaml.Marshal, which no caller can build through
+// the public API.
 func TestWriteFileBytesError(t *testing.T) {
 	t.Parallel()
 
 	doc := &Document{
 		hasFrontmatter: true,
 		frontmatter: yaml.Node{
-			Kind: yaml.SequenceNode,
 			Content: []*yaml.Node{
 				{Kind: yaml.ScalarNode, Tag: yamlStringTag, Value: "item"},
 			},

@@ -98,6 +98,138 @@ func TestParseCRLF(t *testing.T) {
 	}
 }
 
+// TestParseWithoutTrailingNewline covers the final return in scanLine, where
+// the last line of a file has no newline. Every other fixture ends with "\n",
+// so without this the suite passes even if that return is broken -- and a
+// broken one makes every such file fail with ErrUnclosedFrontmatter.
+func TestParseWithoutTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		input string
+		body  string
+		key   string
+	}{
+		"closing marker":         {"---\ntitle: a\n---", "", testKeyTitle},
+		"body":                   {"---\ntitle: a\n---\nbody no nl", "body no nl", testKeyTitle},
+		"alt closing marker":     {"---\ntitle: a\n...", "", testKeyTitle},
+		"no frontmatter":         {"plain body no newline", "plain body no newline", ""},
+		"single line":            {"x", "x", ""},
+		"frontmatter only, crlf": {"---\r\ntitle: a\r\n---\r\nb", "b", testKeyTitle},
+	} {
+		assertParsesWithoutTrailingNewline(t, name, tc.input, tc.body, tc.key)
+	}
+}
+
+// assertParsesWithoutTrailingNewline checks that a file whose last line has no
+// newline parses, keeps its body, and stays parseable after a rewrite (Bytes
+// adds the missing newline the file did not have).
+func assertParsesWithoutTrailingNewline(t *testing.T, name, input, wantBody, wantKey string) {
+	t.Helper()
+
+	doc, err := ParseString(input)
+	if err != nil {
+		t.Fatalf("%s: ParseString returned error: %v", name, err)
+	}
+	if got := string(doc.Body()); got != wantBody {
+		t.Fatalf("%s: body = %q, want %q", name, got, wantBody)
+	}
+
+	if wantKey == "" {
+		if doc.HasFrontmatter() {
+			t.Fatalf("%s: expected no frontmatter", name)
+		}
+		return
+	}
+
+	if !doc.HasFrontmatter() {
+		t.Fatalf("%s: expected frontmatter", name)
+	}
+	if _, ok, getErr := doc.Get(wantKey); getErr != nil || !ok {
+		t.Fatalf("%s: Get(%q) ok=%v err=%v", name, wantKey, ok, getErr)
+	}
+
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("%s: Bytes returned error: %v", name, err)
+	}
+	if _, err = ParseString(string(out)); err != nil {
+		t.Fatalf("%s: rewrite does not re-parse: %v", name, err)
+	}
+}
+
+// TestDelimiterAllowsTrailingWhitespace pins the rule in isMarker's comment:
+// trailing whitespace after a delimiter is allowed. Editors and formatters
+// produce "--- " and "---\t" routinely, and without the trim those files stop
+// being frontmatter at all.
+func TestDelimiterAllowsTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	for name, input := range map[string]string{
+		"opener tab":   "---\t\ntitle: a\n---\nbody\n",
+		"opener space": "--- \ntitle: a\n---\nbody\n",
+		"closer tab":   "---\ntitle: a\n---\t\nbody\n",
+		"closer space": "---\ntitle: a\n--- \nbody\n",
+		"both":         "--- \ntitle: a\n---\t\nbody\n",
+		"crlf opener":  "---\r\ntitle: a\r\n---\r\nbody\r\n",
+	} {
+		doc, err := ParseString(input)
+		if err != nil {
+			t.Fatalf("%s: ParseString returned error: %v", name, err)
+		}
+		if !doc.HasFrontmatter() {
+			t.Fatalf("%s: expected frontmatter", name)
+		}
+		if _, ok, err := doc.Get(testKeyTitle); err != nil || !ok {
+			t.Fatalf("%s: title not readable: ok=%v err=%v", name, ok, err)
+		}
+		if body := string(doc.Body()); body != plainBody && body != "body\r\n" {
+			t.Fatalf("%s: body = %q", name, body)
+		}
+	}
+}
+
+// TestUpdateFileKeepsFrontmatterAfterTrailingWhitespace is the failure a parse
+// test alone would miss. If the delimiter stops being recognized, the file
+// parses as bodyless frontmatter, a set-if-missing write prepends a fresh
+// block, and the note's original metadata drops into the body as prose.
+func TestUpdateFileKeepsFrontmatterAfterTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"opener space": "--- \ntitle: My Note\n---\n" + plainBody,
+		"opener tab":   "---\t\ntitle: My Note\n---\n" + plainBody,
+	} {
+		path := filepath.Join(t.TempDir(), "note.md")
+		if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+			t.Fatalf("%s: WriteFile returned error: %v", name, err)
+		}
+
+		// The write mdid does. The Has check it guards with is irrelevant
+		// here: a document whose frontmatter went unread either way gets a
+		// fresh block prepended.
+		if err := UpdateFile(path, func(doc *Document) error {
+			return doc.SetString("uid", "generated")
+		}); err != nil {
+			t.Fatalf("%s: UpdateFile returned error: %v", name, err)
+		}
+
+		doc, err := ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: ReadFile returned error: %v", name, err)
+		}
+		if body := string(doc.Body()); body != plainBody {
+			t.Fatalf("%s: metadata was demoted into the body %q", name, body)
+		}
+		if title, _, err := doc.GetString(testKeyTitle); err != nil || title != "My Note" {
+			t.Fatalf("%s: title = %q err=%v", name, title, err)
+		}
+		if uid, _, err := doc.GetString("uid"); err != nil || uid != "generated" {
+			t.Fatalf("%s: uid = %q err=%v", name, uid, err)
+		}
+	}
+}
+
 func TestParseUnclosedFrontmatter(t *testing.T) {
 	t.Parallel()
 
@@ -1024,6 +1156,50 @@ func TestSetBody(t *testing.T) {
 	}
 }
 
+// TestDocumentCopiesBytes pins the three ownership promises the godoc makes.
+// Each clone looks redundant and each is load-bearing: without it a caller
+// holding a reference it does not own can change the document underneath it.
+func TestDocumentCopiesBytes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Body returns a copy", func(t *testing.T) {
+		t.Parallel()
+
+		doc := mustParse(t, []byte("---\ntitle: hello\n---\nbody\n"))
+		got := doc.Body()
+		got[0] = 'X'
+		if again := string(doc.Body()); again != plainBody {
+			t.Fatalf("mutating the returned slice changed the document: %q", again)
+		}
+	})
+
+	t.Run("SetBody stores a copy", func(t *testing.T) {
+		t.Parallel()
+
+		source := []byte("original\n")
+		doc := mustParse(t, []byte("placeholder\n"))
+		doc.SetBody(source)
+		source[0] = 'X'
+		if got := string(doc.Body()); got != "original\n" {
+			t.Fatalf("mutating the source slice changed the document: %q", got)
+		}
+	})
+
+	t.Run("Parse does not alias its input", func(t *testing.T) {
+		t.Parallel()
+
+		input := []byte("---\ntitle: hello\n---\nbody\n")
+		doc, err := Parse(input)
+		if err != nil {
+			t.Fatalf("Parse returned error: %v", err)
+		}
+		input[len(input)-1] = 'X'
+		if got := string(doc.Body()); got != plainBody {
+			t.Fatalf("mutating the input buffer changed the document: %q", got)
+		}
+	})
+}
+
 func TestFrontmatterReturnsMap(t *testing.T) {
 	t.Parallel()
 
@@ -1244,14 +1420,41 @@ func TestReadRegularFile(t *testing.T) {
 	}
 }
 
-func TestWriteFileAtomic(t *testing.T) {
+// TestReadRegularFileRefuses covers the symlink and non-regular refusals. Both
+// ReadFile and UpdateFile route through this one helper, so one test pins both
+// entry points.
+func TestReadRegularFileRefuses(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "atomic.md")
+	target := filepath.Join(dir, "target.md")
+	if err := os.WriteFile(target, []byte("body\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
 
-	if err := writeFileAtomic(path, []byte("content\n"), 0o600); err != nil {
-		t.Fatalf("writeFileAtomic returned error: %v", err)
+	link := filepath.Join(dir, "link.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, _, err := readRegularFile(link); err == nil ||
+		!strings.Contains(err.Error(), "refusing to read symlink") {
+		t.Fatalf("expected symlink refusal, got %v", err)
+	}
+
+	if _, _, err := readRegularFile(dir); err == nil ||
+		!strings.Contains(err.Error(), "refusing to read non-regular file") {
+		t.Fatalf("expected non-regular refusal, got %v", err)
+	}
+}
+
+func TestWriteFileInPlace(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "inplace.md")
+
+	if err := writeFileInPlace(path, []byte("content\n"), 0o600); err != nil {
+		t.Fatalf("writeFileInPlace returned error: %v", err)
 	}
 
 	content, err := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
@@ -1263,12 +1466,578 @@ func TestWriteFileAtomic(t *testing.T) {
 	}
 }
 
-func TestWriteFileAtomicValidationError(t *testing.T) {
+func TestWriteFileInPlaceValidationError(t *testing.T) {
 	t.Parallel()
 
-	err := writeFileAtomic("", []byte("x"), 0o600)
+	err := writeFileInPlace("", []byte("x"), 0o600)
 	if err == nil {
 		t.Fatalf("expected error for empty path")
+	}
+}
+
+// TestWriteFileInPlaceShortens pins the truncate step. Without it a shorter
+// payload would leave the tail of the previous content on disk.
+func TestWriteFileInPlaceShortens(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "note.md")
+	if err := writeFileInPlace(path, []byte("a long first version\n"), 0o600); err != nil {
+		t.Fatalf("writeFileInPlace returned error: %v", err)
+	}
+	if err := writeFileInPlace(path, []byte("short\n"), 0o600); err != nil {
+		t.Fatalf("writeFileInPlace returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(content) != "short\n" {
+		t.Fatalf("stale tail left behind: %q", string(content))
+	}
+}
+
+// TestWriteFileInPlaceRefusesSymlink pins O_NOFOLLOW on the write path. The
+// read side has an equivalent test; without this one, dropping |noFollow from
+// the open flags looks like harmless tidying, because Document.WriteFile and
+// UpdateFile both Lstat first, and the suite stays green.
+func TestWriteFileInPlaceRefusesSymlink(t *testing.T) {
+	if runtime.GOOS == windowsOS {
+		t.Skip("O_NOFOLLOW is not available on Windows")
+	}
+
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.md")
+	link := filepath.Join(dir, "link.md")
+	if err := os.WriteFile(target, []byte("original\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := writeFileInPlace(link, []byte("CLOBBERED\n"), 0o600); err == nil {
+		t.Fatalf("expected writeFileInPlace to refuse a symlink")
+	}
+
+	got, err := os.ReadFile(target) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(got) != "original\n" {
+		t.Fatalf("the symlink target was written through: %q", string(got))
+	}
+}
+
+// TestWriteFileInPlaceOpenError covers the open failure, which is the branch
+// every other error path is unreachable without.
+func TestWriteFileInPlaceOpenError(t *testing.T) {
+	if runtime.GOOS == windowsOS {
+		t.Skip("file permissions do not gate writes the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(path, []byte("body\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatalf("Chmod returned error: %v", err)
+	}
+	defer func() { _ = os.Chmod(path, 0o600) }()
+
+	if err := writeFileInPlace(path, []byte("changed\n"), 0o600); err == nil {
+		t.Fatalf("expected an error opening a read-only file")
+	}
+
+	content, err := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(content) != "body\n" {
+		t.Fatalf("a failed open must not touch the file: %q", string(content))
+	}
+}
+
+// TestUpdateFilePreservesInodeAndHardLinks guards the data loss mdid reported:
+// writing through a temporary file and renaming it over the target replaced the
+// inode, so extended attributes, ownership and file flags were dropped and a
+// hard-linked file split into divergent copies. Writing the existing inode keeps
+// all of them, and os.SameFile covers the whole attribute store rather than
+// xattrs alone.
+func TestUpdateFilePreservesInodeAndHardLinks(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	link := filepath.Join(dir, "link.md")
+
+	if err := os.WriteFile(path, []byte("body\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.Link(path, link); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	before, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat returned error: %v", err)
+	}
+
+	if err = UpdateFile(path, func(doc *Document) error {
+		return doc.SetString(testKeyTitle, "linked")
+	}); err != nil {
+		t.Fatalf("UpdateFile returned error: %v", err)
+	}
+
+	after, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat returned error: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatalf("UpdateFile replaced the inode, dropping its attributes and hard links")
+	}
+
+	content, err := os.ReadFile(link) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(content) != "---\ntitle: linked\n---\nbody\n" {
+		t.Fatalf("hard link did not observe the update: %q", string(content))
+	}
+}
+
+// TestDeleteRefusesAnchorInUse guards the data loss this was written for: a
+// key that defines an anchor and is aliased by another key cannot be deleted,
+// because the resulting file holds a dangling alias and can never be parsed
+// again.
+func TestDeleteRefusesAnchorInUse(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\nbase: &b v\nuse: *b\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	removed, err := doc.Delete("base")
+	if !errors.Is(err, ErrAnchorInUse) {
+		t.Fatalf("expected ErrAnchorInUse, got %v", err)
+	}
+	if removed {
+		t.Fatalf("a refused delete must report removed=false")
+	}
+
+	// The document must still serialize to something parseable.
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes returned error: %v", err)
+	}
+	if _, err = ParseString(string(out)); err != nil {
+		t.Fatalf("refused delete left unparseable frontmatter: %v", err)
+	}
+}
+
+// TestAnchorGuardFindsNestedAlias covers the alias search recursing into
+// another key's value. Every other anchor fixture puts the alias at the top
+// level of the mapping, which the loop's first iteration finds without
+// recursing, so this is the only thing standing behind that recursive call.
+func TestAnchorGuardFindsNestedAlias(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"nested mapping":  "---\nbase: &x 1\nholder:\n  ref: *x\n---\nbody\n",
+		"nested sequence": "---\nbase: &x 1\nholder:\n  - *x\n---\nbody\n",
+		"deeply nested":   "---\nbase: &x 1\nholder:\n  mid:\n    ref: *x\n---\nbody\n",
+	} {
+		doc, err := ParseString(src)
+		if err != nil {
+			t.Fatalf("%s: ParseString returned error: %v", name, err)
+		}
+
+		if _, err = doc.Delete("base"); !errors.Is(err, ErrAnchorInUse) {
+			t.Fatalf("%s: Delete expected ErrAnchorInUse, got %v", name, err)
+		}
+		if err = doc.Set("base", 2); !errors.Is(err, ErrAnchorInUse) {
+			t.Fatalf("%s: Set expected ErrAnchorInUse, got %v", name, err)
+		}
+
+		out, err := doc.Bytes()
+		if err != nil {
+			t.Fatalf("%s: Bytes returned error: %v", name, err)
+		}
+		if _, err = ParseString(string(out)); err != nil {
+			t.Fatalf("%s: refused mutation left unparseable frontmatter: %v", name, err)
+		}
+	}
+}
+
+// TestDeleteUnreferencedAnchor covers the other side: an anchor nothing points
+// at is deletable.
+func TestDeleteUnreferencedAnchor(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\nbase: &b v\nplain: w\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	removed, err := doc.Delete("base")
+	if err != nil {
+		t.Fatalf("Delete returned error: %v", err)
+	}
+	if !removed {
+		t.Fatalf("expected the unreferenced anchor to be removed")
+	}
+
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes returned error: %v", err)
+	}
+	if _, err = ParseString(string(out)); err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+}
+
+// TestUpdateFileRefusesAnchorDelete is the file-path version: the write must
+// not happen at all, so the file on disk is untouched.
+func TestUpdateFileRefusesAnchorDelete(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.md")
+	original := "---\nbase: &b v\nuse: *b\n---\nbody\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	err := UpdateFile(path, func(doc *Document) error {
+		_, err := doc.Delete("base")
+		return err
+	})
+	if !errors.Is(err, ErrAnchorInUse) {
+		t.Fatalf("expected ErrAnchorInUse, got %v", err)
+	}
+
+	content, err := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(content) != original {
+		t.Fatalf("refused delete still wrote the file: %q", string(content))
+	}
+}
+
+// TestSetRefusesAnchorInUse covers the other door into the same data loss:
+// overwriting an anchor-defining value with Set must be refused exactly like
+// Delete is, or the file is written unparseable.
+func TestSetRefusesAnchorInUse(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\nbase: &b v\nuse: *b\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	if err = doc.Set("base", "plain"); !errors.Is(err, ErrAnchorInUse) {
+		t.Fatalf("expected ErrAnchorInUse, got %v", err)
+	}
+
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes returned error: %v", err)
+	}
+	if _, err = ParseString(string(out)); err != nil {
+		t.Fatalf("refused Set left unparseable frontmatter: %v", err)
+	}
+
+	// Once the alias is gone the same Set succeeds.
+	if _, err = doc.Delete("use"); err != nil {
+		t.Fatalf("Delete returned error: %v", err)
+	}
+	if err = doc.Set("base", "plain"); err != nil {
+		t.Fatalf("unexpected error after the alias was gone: %v", err)
+	}
+}
+
+// TestDeleteRefusesAnchoredKeyNode covers YAML letting the anchor sit on the
+// key (`&b base: v`) rather than the value. The guard scans both nodes of the
+// pair, so this is refused instead of writing a dangling alias.
+func TestDeleteRefusesAnchoredKeyNode(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\n&b base: v\nuse: *b\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	if _, err = doc.Delete("base"); !errors.Is(err, ErrAnchorInUse) {
+		t.Fatalf("expected ErrAnchorInUse for an anchored key, got %v", err)
+	}
+
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes returned error: %v", err)
+	}
+	if _, err = ParseString(string(out)); err != nil {
+		t.Fatalf("refused Delete left unparseable frontmatter: %v", err)
+	}
+}
+
+// TestDeleteAllowsSelfContainedAnchor is the other side: when an anchor and
+// its only alias both live in the subtree being dropped, they go away together
+// and the mutation is safe. The pair must be excluded from the alias search.
+func TestDeleteAllowsSelfContainedAnchor(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"mapping":  "---\nt:\n  a: &x 1\n  b: *x\nz: 2\n---\nbody\n",
+		"sequence": "---\nt:\n  - &x 1\n  - *x\nz: 2\n---\nbody\n",
+	} {
+		doc, err := ParseString(src)
+		if err != nil {
+			t.Fatalf("%s: ParseString returned error: %v", name, err)
+		}
+
+		if _, err = doc.Delete("t"); err != nil {
+			t.Fatalf("%s: deleting a self-contained anchor must be allowed: %v", name, err)
+		}
+
+		out, err := doc.Bytes()
+		if err != nil {
+			t.Fatalf("%s: Bytes returned error: %v", name, err)
+		}
+		if _, err = ParseString(string(out)); err != nil {
+			t.Fatalf("%s: result does not re-parse: %v", name, err)
+		}
+		if strings.Contains(string(out), "*x") {
+			t.Fatalf("%s: alias survived: %q", name, string(out))
+		}
+	}
+}
+
+// TestDeleteRefusesNestedAnchor covers an anchor defined inside the value
+// being dropped, not on the value node itself.
+func TestDeleteRefusesNestedAnchor(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\ntop:\n  base: &b v\nuse: *b\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	if _, err = doc.Delete("top"); !errors.Is(err, ErrAnchorInUse) {
+		t.Fatalf("expected ErrAnchorInUse for a nested anchor, got %v", err)
+	}
+
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes returned error: %v", err)
+	}
+	if _, err = ParseString(string(out)); err != nil {
+		t.Fatalf("refused Delete left unparseable frontmatter: %v", err)
+	}
+}
+
+// TestSetPreservesCarriageReturn pins that a value holding a CR survives a
+// write. yaml.v3 escapes it as \r on encode, so refusing it here would reject
+// data the library can store losslessly.
+func TestSetPreservesCarriageReturn(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\nk: v\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	if err = doc.Set("k", "a\rb"); err != nil {
+		t.Fatalf("Set returned error: %v", err)
+	}
+
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes returned error: %v", err)
+	}
+
+	back, err := ParseString(string(out))
+	if err != nil {
+		t.Fatalf("written frontmatter does not re-parse: %v", err)
+	}
+	got, ok, err := back.GetString("k")
+	if err != nil || !ok {
+		t.Fatalf("GetString: got=%q ok=%v err=%v", got, ok, err)
+	}
+	if got != "a\rb" {
+		t.Fatalf("carriage return was not preserved: %q", got)
+	}
+}
+
+// TestWriteFileRecreatesWithPerm guards the mode of a file that has to be
+// recreated: a zero perm would leave it unreadable with no error reported.
+func TestWriteFileRecreatesWithPerm(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "note.md")
+	doc := mustParse(t, []byte("---\ntitle: a\n---\nbody\n"))
+	if err := doc.WriteFile(path, 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat returned error: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("unexpected perm: %#o", info.Mode().Perm())
+	}
+}
+
+// TestNodeFromValueTypes pins the encoder across the shapes a downstream tool
+// is likely to pass, so a yaml.v3 marshaling quirk cannot reach a user file
+// unnoticed.
+func TestNodeFromValueTypes(t *testing.T) {
+	t.Parallel()
+
+	for name, value := range map[string]any{
+		"nil":            nil,
+		"int":            42,
+		"float":          1.5,
+		"bool":           true,
+		"string":         "hi",
+		"string slice":   []string{"a", "b"},
+		"string map":     map[string]any{"inner": "v"},
+		"numeric string": "42",
+		"nested":         map[string]any{"a": map[string]any{"b": "c"}},
+	} {
+		assertValueRoundTrips(t, name, value)
+	}
+}
+
+// assertValueRoundTrips checks the contract mdfm owns: what it writes must
+// parse back to the value it was given, with the body and key intact. The
+// exact emitted bytes belong to yaml.v3 and are pinned separately.
+func assertValueRoundTrips(t *testing.T, name string, value any) {
+	t.Helper()
+
+	doc, err := ParseString("body\n")
+	if err != nil {
+		t.Fatalf("%s: ParseString returned error: %v", name, err)
+	}
+	if err = doc.Set("k", value); err != nil {
+		t.Fatalf("%s: Set returned error: %v", name, err)
+	}
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("%s: Bytes returned error: %v", name, err)
+	}
+
+	back, err := ParseString(string(out))
+	if err != nil {
+		t.Fatalf("%s: written frontmatter does not re-parse: %v", name, err)
+	}
+	if string(back.Body()) != "body\n" {
+		t.Fatalf("%s: body was lost: %q", name, string(back.Body()))
+	}
+
+	// A found value also proves the key survived under its own name. yaml
+	// decodes into `any`, so a slice comes back as []any rather than []string;
+	// compare rendered form.
+	decoded, found, err := back.Get("k")
+	if err != nil || !found || fmt.Sprint(decoded) != fmt.Sprint(value) {
+		t.Fatalf("%s: round-tripped %v found=%v err=%v, want %v", name, decoded, found, err, value)
+	}
+}
+
+// TestNodeFromValueEmittedBytes pins the exact bytes for the shapes that carry
+// a promise mdfm makes about the file it writes: a plain string stays a plain
+// scalar, a numeric-looking string keeps its quotes so it re-reads as a
+// string, and the delimiters and body are untouched. Everything else about
+// yaml.v3's output is deliberately not asserted.
+func TestNodeFromValueEmittedBytes(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		value any
+		want  string
+	}{
+		"string":         {"hi", "---\nk: hi\n---\nbody\n"},
+		"numeric string": {"42", "---\nk: \"42\"\n---\nbody\n"},
+		"nil":            {nil, "---\nk: null\n---\nbody\n"},
+	} {
+		doc, err := ParseString("body\n")
+		if err != nil {
+			t.Fatalf("%s: ParseString returned error: %v", name, err)
+		}
+		if err = doc.Set("k", tc.value); err != nil {
+			t.Fatalf("%s: Set returned error: %v", name, err)
+		}
+		out, err := doc.Bytes()
+		if err != nil {
+			t.Fatalf("%s: Bytes returned error: %v", name, err)
+		}
+		if got := string(out); got != tc.want {
+			t.Fatalf("%s: got %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// TestNodeFromValueUnencodable pins the panic recovery in encodeYAMLNode.
+// yaml.v3 panics on types it cannot encode, so this is the only reason a
+// caller's Set returns an error instead of taking their process down.
+func TestNodeFromValueUnencodable(t *testing.T) {
+	t.Parallel()
+
+	doc, err := ParseString("---\nk: v\n---\nbody\n")
+	if err != nil {
+		t.Fatalf("ParseString returned error: %v", err)
+	}
+
+	for name, value := range map[string]any{
+		"func": func() {},
+		"chan": make(chan int),
+	} {
+		if err = doc.Set("k", value); err == nil {
+			t.Fatalf("%s: expected an error for an unencodable value", name)
+		}
+	}
+
+	got, _, err := doc.GetString("k")
+	if err != nil {
+		t.Fatalf("GetString returned error: %v", err)
+	}
+	if got != "v" {
+		t.Fatalf("a refused Set changed the value: %q", got)
+	}
+}
+
+// TestBytesPreservesBOMAndAltMarker pins the two reformatting cases that used
+// to rewrite a user's file on a no-op: the BOM is stripped for parsing but must
+// be written back, and a "..." closing delimiter must survive.
+func TestBytesPreservesBOMAndAltMarker(t *testing.T) {
+	t.Parallel()
+
+	for name, input := range map[string]string{
+		"bom":          "\xEF\xBB\xBF---\ntitle: a\n---\nbody\n",
+		"bom no front": "\xEF\xBB\xBFplain body\n",
+		"alt marker":   "---\ntitle: a\n...\nbody\n",
+		"bom + alt":    "\xEF\xBB\xBF---\ntitle: a\n...\nbody\n",
+	} {
+		out, changed, err := MutateString(input, func(*Document) error { return nil })
+		if err != nil {
+			t.Fatalf("%s: MutateString returned error: %v", name, err)
+		}
+		if out != input {
+			t.Fatalf("%s: no-op rewrite changed the file\n  in =%q\n  out=%q", name, input, out)
+		}
+		if changed {
+			t.Fatalf("%s: no-op rewrite reported changed=true", name)
+		}
 	}
 }
 
@@ -1309,15 +2078,14 @@ func TestNodeFromValueScalarAndMap(t *testing.T) {
 
 // TestUpdateFileNoOpDoesNotRewrite proves the no-op path skips the write
 // instead of relying on a timestamp comparison, which can pass for the wrong
-// reason on a filesystem with coarse timestamp granularity. A rewrite needs to
-// create a temp file in the target directory, so a read-only directory is a
-// deterministic barrier.
+// reason on a filesystem with coarse timestamp granularity. A rewrite opens the
+// target for writing, so a read-only file is a deterministic barrier.
 func TestUpdateFileNoOpDoesNotRewrite(t *testing.T) {
 	if runtime.GOOS == windowsOS {
-		t.Skip("directory permissions do not gate writes the same way on Windows")
+		t.Skip("file permissions do not gate writes the same way on Windows")
 	}
 	if os.Geteuid() == 0 {
-		t.Skip("root bypasses directory permissions")
+		t.Skip("root bypasses file permissions")
 	}
 
 	t.Parallel()
@@ -1330,12 +2098,10 @@ func TestUpdateFileNoOpDoesNotRewrite(t *testing.T) {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 
-	//nolint:gosec // the point of the test is a directory too tight to create a temp file in
-	if err := os.Chmod(dir, 0o500); err != nil {
+	if err := os.Chmod(path, 0o400); err != nil {
 		t.Fatalf("Chmod returned error: %v", err)
 	}
-	//nolint:gosec // restore write permission so t.TempDir cleanup can remove it
-	defer func() { _ = os.Chmod(dir, 0o700) }()
+	defer func() { _ = os.Chmod(path, 0o600) }()
 
 	if err := UpdateFile(path, func(doc *Document) error {
 		return doc.SetString(testKeyTitle, "same")
