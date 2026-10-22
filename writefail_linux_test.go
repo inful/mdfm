@@ -12,7 +12,7 @@ func TestWriteFileInPlaceWriteError(t *testing.T) {
 	t.Parallel()
 
 	const devFull = "/dev/full"
-	if err := writeFileInPlace(devFull, []byte("content\n"), 0o600); err == nil {
+	if err := writeFileInPlace(devFull, []byte("content\n"), 0o600, nil); err == nil {
 		t.Fatalf("expected an error writing to %s", devFull)
 	}
 }
