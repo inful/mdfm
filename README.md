@@ -19,6 +19,35 @@ Scope:
 - Repeating `Delete` on a missing key is idempotent at the byte level.
 - Newline style is preserved (`LF` vs `CRLF`) when parsing and mutating documents.
 - Frontmatter must be a YAML mapping with unique mapping keys for semantic key operations.
+- A document marker is only a marker at column 0. An indented `---` inside a
+  value is value content, so a multi-line value containing one round-trips.
+- A leading UTF-8 BOM is stripped, so frontmatter written by a Windows editor
+  is still recognized.
+- A frontmatter block holding only comments is an empty mapping, not an error.
+- Whitespace-only lines inside frontmatter are not preserved byte for byte, so
+  an update can rewrite a file whose metadata did not change.
+
+Key operations address a key by its scalar text. A key with no scalar value, such
+as a sequence or mapping key (`? [1, 2]`), still parses and survives a rewrite
+unchanged, but `Keys` reports it as `""`, `Get`, `Has`, and `Delete` cannot
+match it, and `Frontmatter` fails to decode the mapping. Deleting one returns
+`removed=false` with no error, so callers should not treat that as success. A
+key written as a YAML scalar of another type, such as `1: one`, is addressable
+by its text (`"1"`). An empty key is rejected by every operation that sets or
+reads one.
+
+Duplicate-key checking visits each YAML node once, so a frontmatter built from
+many anchor aliases stays linear rather than growing with the number of paths
+through the alias graph.
+
+Byte-level idempotency covers `Set` followed by `Set`. It does not mean a parsed
+document is preserved verbatim: serialization re-emits frontmatter through
+`yaml.v3`, so quoting and formatting that `yaml.v3` considers redundant are
+dropped (`title: "x"` becomes `title: x`).
+
+A `Document` holds mutable state and must not be used from more than one
+goroutine at a time. Separate `Document` values are safe to use concurrently:
+the package keeps no mutable shared state.
 
 It is built to be fast, robust, and correct:
 
@@ -26,7 +55,16 @@ It is built to be fast, robust, and correct:
 - Frontmatter is parsed with `yaml.v3` for full YAML correctness.
 - Duplicate mapping keys are rejected during parse.
 - File updates are atomic and skip writes when content is unchanged.
-- Symlink reads/updates are refused for safer file operations.
+- Only regular files are read or replaced. A FIFO, device, or socket is refused
+  rather than opened, because opening one can block forever. `ReadFile` and
+  `UpdateFile` refuse it; `WriteFile` refuses it too, but still creates a
+  missing file.
+- An update writes through a `.<name>.mdfm-*` temp file in the same directory.
+  A hard kill during the write can leave one behind; it is hidden and safe to
+  delete.
+- Symlink reads/updates are refused for safer file operations. The read also
+  refuses to follow a final symlink at open time, so a symlink swapped in after
+  the stat is caught too (on platforms with `O_NOFOLLOW`).
 
 ## Install
 
@@ -40,7 +78,7 @@ Core parsing and mutation helpers:
 
 - `Parse` and `ParseString` parse markdown content into a `Document`.
 - `Mutate` and `MutateString` parse, mutate, and serialize content in one step.
-- `ReadFile` parses a markdown file and refuses symlinks.
+- `ReadFile` parses a markdown file and refuses symlinks and non-regular files.
 - `UpdateFile` mutates a markdown file atomically and skips the write when bytes are unchanged.
 
 `Document` accessors and mutation methods:
@@ -202,7 +240,11 @@ mdfm --set title="My Note" --set draft=false note.md
 mdfm --delete draft note.md
 ```
 
-Note: CLI `--set` values are written as strings.
+Note: CLI `--set` values are written as strings. Only the key is trimmed; a
+value's leading and trailing spaces are preserved. All `--set` flags are applied
+before all `--delete` flags, regardless of the order given on the command line.
+A key named in both flags is therefore removed: `mdfm --delete draft --set
+draft=false note.md` ends with no `draft` key at all.
 
 ## Development
 
@@ -211,3 +253,7 @@ go test ./...
 go test -bench=. -benchmem ./...
 golangci-lint run ./...
 ```
+
+`mise.toml` pins [gortex](https://github.com/zzet/gortex), an optional
+code-graph explorer used while working on this library. Nothing in the build or
+the test suite invokes it; `mise install` is only needed if you want it.
