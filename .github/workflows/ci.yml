@@ -12,7 +12,42 @@ on:
 
 jobs:
   test:
+    # Kept as plain "Test" so an existing branch-protection required check keeps
+    # matching after the matrix was added.
     name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # goreleaser ships windows binaries, so the suite has to build and run
+        # there. The race detector needs a C toolchain that setup-go does not
+        # install, so it runs on linux only. Lint and the release config check
+        # stay on ubuntu.
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            race: '-race'
+          - os: windows-latest
+            race: ''
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test -v ${{ matrix.race }} -cover ./...
+
+      - name: Build
+        run: go build -v ./cmd/mdfm
+
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,11 +65,12 @@ jobs:
         with:
           version: v2.14
 
-      - name: Run tests
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - name: Check goreleaser config
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check
 
       - name: Run benchmarks
         run: go test -bench=. -benchmem -run ^$ ./...
-
-      - name: Build
-        run: go build -v ./cmd/mdfm

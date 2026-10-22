@@ -26,13 +26,16 @@ builds:
         goarch: arm
       - goos: windows
         goarch: arm64
+      # Go dropped 32-bit darwin/arm; without this it is silently skipped.
+      - goos: darwin
+        goarch: arm
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
 
 archives:
   - id: mdfm
-    format: tar.gz
+    formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -43,7 +46,7 @@ archives:
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     files:
       - README.md
       - LICENSE

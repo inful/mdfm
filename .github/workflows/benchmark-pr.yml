@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: read
+  # comment-on-alert posts a comment on the pull request. On fork PRs the
+  # token is read-only by GitHub policy and the step is skipped, which is fine.
+  pull-requests: write
 
 jobs:
   benchmark-pr:
@@ -44,7 +47,9 @@ jobs:
           output-file-path: output.txt
           external-data-json-path: ./cache/benchmark-data.json
           save-data-file: false
-          fail-on-alert: true
+          # A new PR can restore another branch's baseline via restore-keys, so
+          # the numbers compared here may not be main's. Report, do not block.
+          fail-on-alert: false
           comment-on-alert: true
           summary-always: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
