@@ -1449,13 +1449,41 @@ func TestReadRegularFileRefuses(t *testing.T) {
 	}
 }
 
+// TestRestoreFile covers the undo that runs when a write stops partway. The
+// write that triggers it cannot be forced portably, but the undo itself can:
+// the file below is exactly what a partway write leaves behind, the new prefix
+// in front of the old tail.
+func TestRestoreFile(t *testing.T) {
+	t.Parallel()
+
+	const original = "---\ntitle: original\n---\nbody\n"
+	const mixed = "---\ntitle: new, and considerably longer than the original title\n---\nbody\n"
+
+	path := filepath.Join(t.TempDir(), "restored.md")
+	if err := os.WriteFile(path, []byte(mixed), 0o600); err != nil {
+		t.Fatalf("os.WriteFile returned error: %v", err)
+	}
+
+	if err := restoreFile(path, []byte(original)); err != nil {
+		t.Fatalf("restoreFile returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(path) // #nosec G304 -- path is created by t.TempDir in this test.
+	if err != nil {
+		t.Fatalf("os.ReadFile returned error: %v", err)
+	}
+	if string(got) != original {
+		t.Errorf("restoreFile left %q, want %q", got, original)
+	}
+}
+
 func TestWriteFileInPlace(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "inplace.md")
 
-	if err := writeFileInPlace(path, []byte("content\n"), 0o600); err != nil {
+	if err := writeFileInPlace(path, []byte("content\n"), 0o600, nil); err != nil {
 		t.Fatalf("writeFileInPlace returned error: %v", err)
 	}
 
@@ -1471,7 +1499,7 @@ func TestWriteFileInPlace(t *testing.T) {
 func TestWriteFileInPlaceValidationError(t *testing.T) {
 	t.Parallel()
 
-	err := writeFileInPlace("", []byte("x"), 0o600)
+	err := writeFileInPlace("", []byte("x"), 0o600, nil)
 	if err == nil {
 		t.Fatalf("expected error for empty path")
 	}
@@ -1483,10 +1511,10 @@ func TestWriteFileInPlaceShortens(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "note.md")
-	if err := writeFileInPlace(path, []byte("a long first version\n"), 0o600); err != nil {
+	if err := writeFileInPlace(path, []byte("a long first version\n"), 0o600, nil); err != nil {
 		t.Fatalf("writeFileInPlace returned error: %v", err)
 	}
-	if err := writeFileInPlace(path, []byte("short\n"), 0o600); err != nil {
+	if err := writeFileInPlace(path, []byte("short\n"), 0o600, nil); err != nil {
 		t.Fatalf("writeFileInPlace returned error: %v", err)
 	}
 
@@ -1520,7 +1548,7 @@ func TestWriteFileInPlaceRefusesSymlink(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	if err := writeFileInPlace(link, []byte("CLOBBERED\n"), 0o600); err == nil {
+	if err := writeFileInPlace(link, []byte("CLOBBERED\n"), 0o600, nil); err == nil {
 		t.Fatalf("expected writeFileInPlace to refuse a symlink")
 	}
 
@@ -1555,7 +1583,7 @@ func TestWriteFileInPlaceOpenError(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(path, 0o600) }()
 
-	if err := writeFileInPlace(path, []byte("changed\n"), 0o600); err == nil {
+	if err := writeFileInPlace(path, []byte("changed\n"), 0o600, nil); err == nil {
 		t.Fatalf("expected an error opening a read-only file")
 	}
 

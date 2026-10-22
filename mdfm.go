@@ -238,8 +238,9 @@ func UpdateFile(path string, mutate func(*Document) error) error {
 
 	// The file exists, so O_CREATE leaves its mode alone. perm is still passed
 	// so that a file removed between the read and the write is recreated
-	// readable rather than as mode 0000.
-	if err = writeFileInPlace(path, updated, perm); err != nil {
+	// readable rather than as mode 0000. original is the undo for a write that
+	// stops partway.
+	if err = writeFileInPlace(path, updated, perm, original); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -640,7 +641,7 @@ func (d *Document) WriteFile(path string, perm os.FileMode) error {
 		return fmt.Errorf("failed to serialize document: %w", err)
 	}
 
-	if err = writeFileInPlace(path, data, perm); err != nil {
+	if err = writeFileInPlace(path, data, perm, nil); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -1012,7 +1013,29 @@ func readFileNoFollow(path string) ([]byte, error) {
 // shortcut: a crash between the write and the truncate can leave a partially
 // written file. Replace with a write-temp-then-copy-into-inode scheme if
 // crash-atomic frontmatter edits are ever required.
-func writeFileInPlace(path string, data []byte, perm os.FileMode) error {
+// writeFileInPlace rewrites path on its own inode, so extended attributes,
+// hard links and file identity survive. restore is the file's previous content
+// and may be nil; it is written back when the new content cannot be written in
+// full, because a write that stops partway leaves the new prefix in front of
+// the old tail.
+// restoreFile puts path back to the bytes it held before a failed write. It
+// rewrites in place, so the inode, its links and its extended attributes are
+// the same ones the failed write was aimed at.
+func restoreFile(path string, original []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|noFollow, 0) //nolint:gosec // path is caller-supplied by design.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+
+	if _, err = file.WriteAt(original, 0); err != nil {
+		return err
+	}
+
+	return file.Truncate(int64(len(original)))
+}
+
+func writeFileInPlace(path string, data []byte, perm os.FileMode, restore []byte) error {
 	// O_CREATE leaves an existing file's mode alone and applies perm only to a
 	// newly created one; noFollow refuses a final symlink component, matching
 	// the read path.
@@ -1022,12 +1045,18 @@ func writeFileInPlace(path string, data []byte, perm os.FileMode) error {
 	}
 
 	// Write before truncating so a partially failed write leaves the file at its
-	// original length rather than a short one. No test can distinguish the
-	// order: it needs a write that fails partway, and the only fault injector
-	// available (/dev/full, Linux-only) fails outright. Treat this as a
-	// judgement call, not a verified guarantee.
+	// original length rather than a short one. A write that stops partway
+	// instead of failing outright would leave the new prefix in front of the
+	// old tail, which parses as frontmatter but says something different, so
+	// that case puts the original bytes back. No test can reach either branch:
+	// it needs a write that fails partway, and the only fault injector
+	// available (/dev/full, Linux-only, and ulimit -f elsewhere) fails
+	// outright. Treat this as a judgement call, not a verified guarantee.
 	if _, err = file.Write(data); err != nil {
 		_ = file.Close()
+		if restore != nil {
+			_ = restoreFile(path, restore)
+		}
 		return err
 	}
 	if err = file.Truncate(int64(len(data))); err != nil {
