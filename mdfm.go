@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,6 +34,12 @@ const (
 )
 
 var (
+	// utf8BOM is stripped before delimiter detection. Files written by some
+	// Windows editors start with one, and without this the frontmatter is not
+	// recognized, so the first Set prepends a second block and strands the
+	// original metadata in the body.
+	utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
 	// ErrUnclosedFrontmatter is returned when an opening delimiter is present
 	// without a closing delimiter.
 	ErrUnclosedFrontmatter = errors.New("unclosed frontmatter block")
@@ -68,6 +75,8 @@ type Document struct {
 // frontmatter delimiter on the first line. Parsed frontmatter must be a YAML
 // mapping with unique mapping keys.
 func Parse(content []byte) (*Document, error) {
+	content = bytes.TrimPrefix(content, utf8BOM)
+
 	line, next, newline, ok := scanLine(content, 0)
 	if !ok || !isOpeningDelimiter(line) {
 		return &Document{
@@ -118,16 +127,19 @@ func ParseString(content string) (*Document, error) {
 // It returns the updated bytes, whether the serialized content changed, and any
 // parse, mutation, or serialization error. A nil mutate callback is treated as
 // a no-op.
+//
+// The input slice is never written to, so it can be compared against the result
+// without copying it first.
 func Mutate(content []byte, mutate func(*Document) error) ([]byte, bool, error) {
-	original := slices.Clone(content)
-
 	doc, err := Parse(content)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to parse markdown: %w", err)
 	}
 
-	if err = applyMutation(doc, mutate); err != nil {
-		return nil, false, err
+	if mutate != nil {
+		if err = mutate(doc); err != nil {
+			return nil, false, fmt.Errorf("failed to mutate document: %w", err)
+		}
 	}
 
 	updated, err := doc.Bytes()
@@ -135,7 +147,7 @@ func Mutate(content []byte, mutate func(*Document) error) ([]byte, bool, error) 
 		return nil, false, fmt.Errorf("failed to serialize document: %w", err)
 	}
 
-	return updated, !bytes.Equal(original, updated), nil
+	return updated, !bytes.Equal(content, updated), nil
 }
 
 // MutateString parses markdown text, applies mutate, and serializes the
@@ -167,8 +179,13 @@ func ReadFile(path string) (*Document, error) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("refusing to read symlink: %s", path)
 	}
+	// Opening a FIFO or device node can block forever, and the mode is
+	// already in hand.
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("refusing to read non-regular file: %s", path)
+	}
 
-	content, err := os.ReadFile(path) //nolint:gosec
+	content, err := readFileNoFollow(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
@@ -200,8 +217,10 @@ func UpdateFile(path string, mutate func(*Document) error) error {
 		return fmt.Errorf("failed to parse markdown: %w", err)
 	}
 
-	if err = applyMutation(doc, mutate); err != nil {
-		return err
+	if mutate != nil {
+		if err = mutate(doc); err != nil {
+			return fmt.Errorf("failed to mutate document: %w", err)
+		}
 	}
 
 	updated, err := doc.Bytes()
@@ -292,6 +311,10 @@ func (d *Document) SetFrontmatter(frontmatter map[string]any) error {
 
 	mappingNode, err := extractMappingNode(&node)
 	if err != nil {
+		return err
+	}
+
+	if err = validateMappingKeys(mappingNode); err != nil {
 		return err
 	}
 
@@ -424,7 +447,10 @@ func (d *Document) Delete(key string) (bool, error) {
 		return false, nil
 	}
 
-	d.deleteValueAtIndex(idx)
+	// slices.Delete clears the vacated tail slots; a plain append-shift would
+	// leave the deleted key and value reachable through the backing array,
+	// pinning their memory until the next realloc.
+	d.frontmatter.Content = slices.Delete(d.frontmatter.Content, idx, idx+frontmatterKVPairWidth)
 
 	return true, nil
 }
@@ -473,11 +499,15 @@ func (d *Document) Bytes() ([]byte, error) {
 	buf.WriteString(newline)
 
 	if len(d.frontmatter.Content) > 0 {
+		if d.frontmatter.Kind != yaml.MappingNode {
+			return nil, ErrFrontmatterNotMapping
+		}
+
 		// yaml.Marshal always emits LF line endings, so normalize only after
 		// marshaling to preserve the document's preferred newline style.
-		frontmatterBytes, err := marshalFrontmatter(&d.frontmatter)
+		frontmatterBytes, err := yaml.Marshal(&d.frontmatter)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to marshal frontmatter: %w", err)
 		}
 
 		if newline == crlf {
@@ -512,6 +542,9 @@ func (d *Document) WriteFile(path string, perm os.FileMode) error {
 	if err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to write symlink: %s", path)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to write non-regular file: %s", path)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to stat file: %w", err)
@@ -588,13 +621,6 @@ func (d *Document) appendKeyValueNode(key string, valueNode *yaml.Node) {
 	)
 }
 
-func (d *Document) deleteValueAtIndex(idx int) {
-	d.frontmatter.Content = append(
-		d.frontmatter.Content[:idx],
-		d.frontmatter.Content[idx+2:]...,
-	)
-}
-
 func parseFrontmatterMapping(data []byte) (yaml.Node, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
@@ -618,26 +644,57 @@ func parseFrontmatterMapping(data []byte) (yaml.Node, error) {
 	return *mappingNode, nil
 }
 
-func validateUniqueMappingKeys(node *yaml.Node) error {
-	if node == nil {
-		return nil
-	}
-
-	switch node.Kind {
-	case yaml.MappingNode:
-		return validateUniqueKeysInMapping(node)
-	case yaml.SequenceNode:
-		return validateUniqueKeysInChildren(node.Content)
-	case yaml.AliasNode:
-		if node.Alias != nil {
-			return validateUniqueMappingKeys(node.Alias)
+// A YAML anchor can be aliased any number of times, and each alias re-walks
+// its whole target subtree. A chain of anchors where each aliases its
+// predecessor twice costs 2^depth that way, so an 800-byte frontmatter can
+// burn minutes of CPU. Validating each node at most once keeps it linear;
+// the check is a pure predicate, so skipping a repeat cannot change the
+// answer.
+// A Go map can carry an empty-string key, which no other operation could then
+// address: Get, Has, and Delete all reject an empty key, so the value would be
+// written to the user's file and be impossible to remove. Complex (non-scalar)
+// keys are left alone; they also have an empty Value, but they are documented
+// as unreachable and must still round-trip.
+//
+// Only the top level is checked. Nested keys are never addressable by Get, Has,
+// or Delete regardless of their text.
+func validateMappingKeys(mapping *yaml.Node) error {
+	for i := 0; i < len(mapping.Content); i += frontmatterKVPairWidth {
+		keyNode := mapping.Content[i]
+		if keyNode.Kind == yaml.ScalarNode && keyNode.Value == "" {
+			return ErrEmptyKey
 		}
 	}
 
 	return nil
 }
 
-func validateUniqueKeysInMapping(node *yaml.Node) error {
+func validateUniqueMappingKeys(node *yaml.Node) error {
+	return validateUniqueMappingKeysVisited(node, make(map[*yaml.Node]struct{}))
+}
+
+func validateUniqueMappingKeysVisited(node *yaml.Node, visited map[*yaml.Node]struct{}) error {
+	if node == nil {
+		return nil
+	}
+	if _, done := visited[node]; done {
+		return nil
+	}
+	visited[node] = struct{}{}
+
+	switch node.Kind {
+	case yaml.MappingNode:
+		return validateUniqueKeysInMapping(node, visited)
+	case yaml.SequenceNode:
+		return validateUniqueKeysInChildren(node.Content, visited)
+	case yaml.AliasNode:
+		return validateUniqueMappingKeysVisited(node.Alias, visited)
+	}
+
+	return nil
+}
+
+func validateUniqueKeysInMapping(node *yaml.Node, visited map[*yaml.Node]struct{}) error {
 	seen := make(map[string]struct{}, len(node.Content)/frontmatterKVPairWidth)
 	for i := 0; i < len(node.Content); i += frontmatterKVPairWidth {
 		keyNode := node.Content[i]
@@ -650,7 +707,7 @@ func validateUniqueKeysInMapping(node *yaml.Node) error {
 		}
 		seen[keyID] = struct{}{}
 
-		if err := validateUniqueMappingKeys(node.Content[i+1]); err != nil {
+		if err := validateUniqueMappingKeysVisited(node.Content[i+1], visited); err != nil {
 			return err
 		}
 	}
@@ -658,9 +715,9 @@ func validateUniqueKeysInMapping(node *yaml.Node) error {
 	return nil
 }
 
-func validateUniqueKeysInChildren(children []*yaml.Node) error {
+func validateUniqueKeysInChildren(children []*yaml.Node, visited map[*yaml.Node]struct{}) error {
 	for _, child := range children {
-		if err := validateUniqueMappingKeys(child); err != nil {
+		if err := validateUniqueMappingKeysVisited(child, visited); err != nil {
 			return err
 		}
 	}
@@ -677,6 +734,11 @@ func mappingKeyIdentity(node *yaml.Node) (string, error) {
 	// canonical string for equality; yaml.Marshal would re-encode it
 	// (allocating a new emitter, buffer, and string each time) for no
 	// benefit. Complex keys fall back to Marshal.
+	//
+	// shortcut: an alias key and the anchor it points at marshal to
+	// different text ("*a" vs the inline mapping), so they are not seen as
+	// duplicates. Resolve aliases before Marshal to compare by target if a
+	// real file ever needs that distinction.
 	if node.Kind == yaml.ScalarNode {
 		return node.Value, nil
 	}
@@ -711,6 +773,15 @@ func extractMappingNode(root *yaml.Node) (*yaml.Node, error) {
 	}
 
 	node := root
+
+	// yaml.v3 leaves Kind at its zero value for an empty document: blank
+	// input, whitespace only, or comments only. That is an empty mapping, not
+	// a document that is some other shape.
+	if node.Kind == 0 {
+		empty := emptyMappingNode()
+		return &empty, nil
+	}
+
 	if node.Kind == yaml.DocumentNode {
 		if len(node.Content) == 0 {
 			empty := emptyMappingNode()
@@ -752,6 +823,12 @@ func nodeFromValue(value any) (*yaml.Node, error) {
 // returning an error for types it cannot encode (functions, channels, unsafe
 // pointers); this helper recovers that panic so public callers can rely on
 // the normal error-return contract.
+//
+// shortcut: the recover catches every panic from yaml.v3, not only the
+// unencodable-type one, and yaml.v3 exports no sentinel to narrow it to. The
+// panic payload is an unexported yamlError type. Replace with an explicit
+// reflect.Kind allowlist check if a yaml.v3 internal panic ever needs to
+// surface as a crash instead of an error.
 func encodeYAMLNode(v any) (node yaml.Node, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -765,22 +842,6 @@ func encodeYAMLNode(v any) (node yaml.Node, err error) {
 	return node, nil
 }
 
-func marshalFrontmatter(mapping *yaml.Node) ([]byte, error) {
-	if mapping == nil {
-		return nil, nil
-	}
-	if mapping.Kind != yaml.MappingNode {
-		return nil, ErrFrontmatterNotMapping
-	}
-
-	bytesOut, err := yaml.Marshal(mapping)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal frontmatter: %w", err)
-	}
-
-	return bytesOut, nil
-}
-
 func findClosingDelimiter(content []byte, start int) (closeStart int, closeEnd int, err error) {
 	for pos := start; pos <= len(content); {
 		line, next, _, ok := scanLine(content, pos)
@@ -792,9 +853,8 @@ func findClosingDelimiter(content []byte, start int) (closeStart int, closeEnd i
 			return pos, next, nil
 		}
 
-		if next == pos {
-			break
-		}
+		// scanLine only reports ok when start < len(content), so next is
+		// always greater than pos here; no progress check is needed.
 		pos = next
 	}
 
@@ -821,17 +881,32 @@ func scanLine(content []byte, start int) (line []byte, next int, newline string,
 	return content[start:], len(content), "", true
 }
 
+// A YAML document marker is only a marker at column 0. yaml.v3 indents
+// block-scalar content by four spaces, so accepting an indented "---" cut a
+// multi-line value in half and spliced the remainder into the body. Only
+// trailing whitespace after the marker is allowed.
+func isMarker(line, marker []byte) bool {
+	return bytes.Equal(bytes.TrimRight(line, " \t\r"), marker)
+}
+
 func isOpeningDelimiter(line []byte) bool {
-	return bytes.Equal(bytes.TrimSpace(line), []byte(openingDelimiter))
+	return isMarker(line, []byte(openingDelimiter))
 }
 
 func isClosingDelimiter(line []byte) bool {
-	trimmed := bytes.TrimSpace(line)
-	return bytes.Equal(trimmed, []byte(closingDelimiter)) || bytes.Equal(trimmed, []byte(altClosingMarker))
+	return isMarker(line, []byte(closingDelimiter)) || isMarker(line, []byte(altClosingMarker))
 }
 
 func detectPreferredNewline(content []byte) string {
-	if bytes.Contains(content, []byte(crlf)) {
+	crlfCount := bytes.Count(content, []byte(crlf))
+	if crlfCount == 0 {
+		return lf
+	}
+
+	// bytes.Contains would let a single stray CRLF inside an LF file flip the
+	// whole new frontmatter block, so require CRLF to be the majority style.
+	lfCount := bytes.Count(content, []byte(lf)) - crlfCount
+	if crlfCount > lfCount {
 		return crlf
 	}
 	return lf
@@ -849,8 +924,13 @@ func readRegularFile(path string) ([]byte, os.FileMode, error) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, 0, fmt.Errorf("refusing to update symlink: %s", path)
 	}
+	// Opening a FIFO or device node can block forever, and the mode is
+	// already in hand.
+	if !info.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("refusing to update non-regular file: %s", path)
+	}
 
-	content, err := os.ReadFile(path) //nolint:gosec
+	content, err := readFileNoFollow(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to read file: %w", err)
 	}
@@ -858,16 +938,24 @@ func readRegularFile(path string) ([]byte, os.FileMode, error) {
 	return content, info.Mode().Perm(), nil
 }
 
-func applyMutation(doc *Document, mutate func(*Document) error) error {
-	if mutate == nil {
-		return nil
+// readFileNoFollow reads path, refusing a final symlink component at open time
+// rather than relying on an earlier Lstat that an attacker could invalidate.
+func readFileNoFollow(path string) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|noFollow, 0) //nolint:gosec // path is caller-supplied by design.
+	if err != nil {
+		return nil, err
 	}
+	defer func() { _ = file.Close() }()
 
-	if err := mutate(doc); err != nil {
-		return fmt.Errorf("failed to mutate document: %w", err)
-	}
-
-	return nil
+	// shortcut: io.ReadAll grows from 512 bytes and recopies the file at every
+	// step, so a read allocates roughly twice the file size where os.ReadFile
+	// would allocate once. os.ReadFile cannot be used here because it opens the
+	// path itself and would lose O_NOFOLLOW, and Parse clones the body while
+	// Bytes builds a full output buffer anyway, so the read buffer is not the
+	// dominant allocation. Replace with a pre-sized read loop (os.ReadFile's,
+	// plus a size+1 so the final read does not force a realloc) if the markdown
+	// files this library reads ever reach the megabyte range in bulk.
+	return io.ReadAll(file)
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) (retErr error) {

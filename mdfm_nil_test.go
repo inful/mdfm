@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,10 @@ import (
 const (
 	emptyFrontmatterDoc = "---\n---\nbody\n"
 	windowsOS           = "windows"
+
+	// Shared by the delimiter round-trip and BOM tests.
+	plainBody        = "body\n"
+	bomOriginalTitle = "original"
 )
 
 // This file exercises two concerns:
@@ -200,7 +205,7 @@ func TestParseEmptyFrontmatterBlock(t *testing.T) {
 	if !doc.HasFrontmatter() {
 		t.Fatalf("expected frontmatter to be present")
 	}
-	if string(doc.Body()) != "body\n" {
+	if string(doc.Body()) != plainBody {
 		t.Fatalf("unexpected body: %q", string(doc.Body()))
 	}
 
@@ -281,8 +286,8 @@ func TestReadFileNotFound(t *testing.T) {
 	}
 }
 
-// TestReadFileIsDirectory covers the os.ReadFile error path: the path exists
-// and is not a symlink, but cannot be read as a regular file.
+// TestReadFileIsDirectory covers the mode check: the path exists and is not a
+// symlink, but is not a regular file, so it is refused before being opened.
 func TestReadFileIsDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -290,8 +295,41 @@ func TestReadFileIsDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for directory path")
 	}
-	if !strings.Contains(err.Error(), "failed to read file") {
-		t.Fatalf("expected read error, got %v", err)
+	if !strings.Contains(err.Error(), "refusing to read non-regular file") {
+		t.Fatalf("expected non-regular file refusal, got %v", err)
+	}
+}
+
+// TestUpdateFileRefusesFIFO pins that a named pipe is refused rather than
+// opened, because opening one read-only blocks until a writer appears.
+func TestUpdateFileRefusesFIFO(t *testing.T) {
+	if runtime.GOOS == windowsOS {
+		t.Skip("named pipes need elevated privileges on Windows")
+	}
+
+	t.Parallel()
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe")
+	if err := mkfifo(fifo); err != nil {
+		t.Skipf("cannot create a FIFO on this platform: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- UpdateFile(fifo, func(*Document) error { return nil })
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("expected UpdateFile to refuse a FIFO")
+		}
+		if !strings.Contains(err.Error(), "refusing to update non-regular file") {
+			t.Fatalf("expected non-regular file refusal, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("UpdateFile blocked on a FIFO instead of refusing it")
 	}
 }
 
@@ -497,16 +535,6 @@ func TestGetNoFrontmatter(t *testing.T) {
 	}
 }
 
-func TestGetNonMappingFrontmatter(t *testing.T) {
-	t.Parallel()
-
-	doc := &Document{hasFrontmatter: true, frontmatter: yaml.Node{Kind: yaml.SequenceNode}}
-	_, _, err := doc.Get("title")
-	if !errors.Is(err, ErrFrontmatterNotMapping) {
-		t.Fatalf("expected ErrFrontmatterNotMapping, got %v", err)
-	}
-}
-
 func TestHasNoFrontmatter(t *testing.T) {
 	t.Parallel()
 
@@ -520,16 +548,6 @@ func TestHasNoFrontmatter(t *testing.T) {
 	}
 	if has {
 		t.Fatalf("expected has=false for no frontmatter")
-	}
-}
-
-func TestHasNonMappingFrontmatter(t *testing.T) {
-	t.Parallel()
-
-	doc := &Document{hasFrontmatter: true, frontmatter: yaml.Node{Kind: yaml.SequenceNode}}
-	_, err := doc.Has("title")
-	if !errors.Is(err, ErrFrontmatterNotMapping) {
-		t.Fatalf("expected ErrFrontmatterNotMapping, got %v", err)
 	}
 }
 
@@ -568,16 +586,6 @@ func TestDeleteNoFrontmatter(t *testing.T) {
 	}
 }
 
-func TestDeleteNonMappingFrontmatter(t *testing.T) {
-	t.Parallel()
-
-	doc := &Document{hasFrontmatter: true, frontmatter: yaml.Node{Kind: yaml.SequenceNode}}
-	_, err := doc.Delete("title")
-	if !errors.Is(err, ErrFrontmatterNotMapping) {
-		t.Fatalf("expected ErrFrontmatterNotMapping, got %v", err)
-	}
-}
-
 func TestKeysNoFrontmatter(t *testing.T) {
 	t.Parallel()
 
@@ -591,16 +599,6 @@ func TestKeysNoFrontmatter(t *testing.T) {
 	}
 	if keys != nil {
 		t.Fatalf("expected nil keys for no frontmatter, got %v", keys)
-	}
-}
-
-func TestKeysNonMappingFrontmatter(t *testing.T) {
-	t.Parallel()
-
-	doc := &Document{hasFrontmatter: true, frontmatter: yaml.Node{Kind: yaml.SequenceNode}}
-	_, err := doc.Keys()
-	if !errors.Is(err, ErrFrontmatterNotMapping) {
-		t.Fatalf("expected ErrFrontmatterNotMapping, got %v", err)
 	}
 }
 
@@ -656,6 +654,10 @@ func TestBytesEmptyFrontmatter(t *testing.T) {
 	}
 }
 
+// TestBytesNonMappingFrontmatter is the one place the non-mapping guard is
+// pinned. Parse rejects a non-mapping frontmatter and SetFrontmatter only
+// accepts a Go map, so no caller outside this package can reach the state; the
+// check stays as a defensive guard for in-package changes.
 func TestBytesNonMappingFrontmatter(t *testing.T) {
 	t.Parallel()
 
