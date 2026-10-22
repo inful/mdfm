@@ -15,33 +15,33 @@ var version = "dev"
 const (
 	exitUsage = 2
 
-	setFlag = "--set"
+	// Names as registered with flag, which must not carry a leading dash.
+	setName    = "set"
+	deleteName = "delete"
+
+	// Forms as shown in usage and error messages.
+	setFlag    = "--" + setName
+	deleteFlag = "--" + deleteName
 )
-
-type repeatedFlag []string
-
-func (r *repeatedFlag) String() string {
-	return strings.Join(*r, ",")
-}
-
-func (r *repeatedFlag) Set(value string) error {
-	*r = append(*r, value)
-	return nil
-}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	var setPairs repeatedFlag
-	var deleteKeys repeatedFlag
+	var setPairs, deleteKeys []string
 	var showVersion bool
 
 	flagSet := flag.NewFlagSet("mdfm", flag.ContinueOnError)
 	flagSet.SetOutput(stderr)
-	flagSet.Var(&setPairs, "set", "Set frontmatter key=value (repeatable)")
-	flagSet.Var(&deleteKeys, "delete", "Delete frontmatter key (repeatable)")
+	flagSet.Func(setName, "Set frontmatter key=value (repeatable)", func(value string) error {
+		setPairs = append(setPairs, value)
+		return nil
+	})
+	flagSet.Func(deleteName, "Delete frontmatter key (repeatable)", func(value string) error {
+		deleteKeys = append(deleteKeys, value)
+		return nil
+	})
 	flagSet.BoolVar(&showVersion, "version", false, "Show version")
 	if err := flagSet.Parse(args); err != nil {
 		return 1
@@ -65,7 +65,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if !ok {
 				return fmt.Errorf("invalid %s value %q, expected key=value", setFlag, pair)
 			}
-			if err := doc.Set(strings.TrimSpace(key), strings.TrimSpace(value)); err != nil {
+			// Only the key is trimmed: an intentional leading or trailing
+			// space in a value is the user's data, not stray whitespace.
+			if err := doc.Set(strings.TrimSpace(key), value); err != nil {
 				return err
 			}
 		}
