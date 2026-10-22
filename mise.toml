@@ -1,2 +1,4 @@
 [tools]
-"github:zzet/gortex" = "latest"
+# Pinned so a breaking gortex release cannot break setup for the next person.
+# Nothing in the build, tests, lint or release invokes it.
+"github:zzet/gortex" = "v0.64.8"
