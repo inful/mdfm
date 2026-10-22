@@ -11,18 +11,27 @@ Scope:
 
 ## Operation Guarantees
 
-- `Set` updates an existing top-level key in place.
+- `Set` updates an existing top-level key in place, unless that key defines a
+  YAML anchor something else aliases, in which case it returns `ErrAnchorInUse`.
 - `Set` appends a missing top-level key.
 - `Get` and `Has` return `found=false` for missing keys.
 - `Delete` removes only the requested top-level key and reports whether it was removed.
 - Repeating `Set` with the same value is idempotent at the byte level.
 - Repeating `Delete` on a missing key is idempotent at the byte level.
 - Newline style is preserved (`LF` vs `CRLF`) when parsing and mutating documents.
+- A leading UTF-8 BOM is stripped so frontmatter written by a Windows editor is
+  recognized, and written back on rewrite. A `...` closing delimiter is
+  preserved too, so a no-op update leaves such files byte-identical.
+- `Delete` and `Set` refuse a key that defines a YAML anchor another key still
+  aliases, including an anchor defined inside a nested value, because writing
+  the result would produce frontmatter that can no longer be parsed. The error
+  is `ErrAnchorInUse`.
+- A document whose first line is `---` is always read as opening a frontmatter
+  block, so a markdown file that opens with a thematic break is rejected with
+  `ErrUnclosedFrontmatter`. This matches Jekyll.
 - Frontmatter must be a YAML mapping with unique mapping keys for semantic key operations.
 - A document marker is only a marker at column 0. An indented `---` inside a
   value is value content, so a multi-line value containing one round-trips.
-- A leading UTF-8 BOM is stripped, so frontmatter written by a Windows editor
-  is still recognized.
 - A frontmatter block holding only comments is an empty mapping, not an error.
 - Whitespace-only lines inside frontmatter are not preserved byte for byte, so
   an update can rewrite a file whose metadata did not change.
@@ -31,7 +40,10 @@ Key operations address a key by its scalar text. A key with no scalar value, suc
 as a sequence or mapping key (`? [1, 2]`), still parses and survives a rewrite
 unchanged, but `Keys` reports it as `""`, `Get`, `Has`, and `Delete` cannot
 match it, and `Frontmatter` fails to decode the mapping. Deleting one returns
-`removed=false` with no error, so callers should not treat that as success. A
+`removed=false` with no error, so callers should not treat that as success.
+Deleting a key that defines an anchor other keys alias returns `ErrAnchorInUse`
+and changes nothing, because the result would no longer parse. Overwriting such
+a key with `Set` is refused the same way. A
 key written as a YAML scalar of another type, such as `1: one`, is addressable
 by its text (`"1"`). An empty key is rejected by every operation that sets or
 reads one.
@@ -54,14 +66,15 @@ It is built to be fast, robust, and correct:
 - Delimiter scanning is line-based and allocation-light.
 - Frontmatter is parsed with `yaml.v3` for full YAML correctness.
 - Duplicate mapping keys are rejected during parse.
-- File updates are atomic and skip writes when content is unchanged.
-- Only regular files are read or replaced. A FIFO, device, or socket is refused
+- File updates rewrite the existing inode and skip writes when content is
+  unchanged. Extended attributes, ownership, file flags, inode identity and hard
+  links therefore survive a write; the trade-off is that a hard kill mid-write
+  can leave a partially written file, which no longer happens when updates are
+  staged through a temp file and renamed.
+- Only regular files are read or written. A FIFO, device, or socket is refused
   rather than opened, because opening one can block forever. `ReadFile` and
   `UpdateFile` refuse it; `WriteFile` refuses it too, but still creates a
   missing file.
-- An update writes through a `.<name>.mdfm-*` temp file in the same directory.
-  A hard kill during the write can leave one behind; it is hidden and safe to
-  delete.
 - Symlink reads/updates are refused for safer file operations. The read also
   refuses to follow a final symlink at open time, so a symlink swapped in after
   the stat is caught too (on platforms with `O_NOFOLLOW`).
@@ -79,7 +92,7 @@ Core parsing and mutation helpers:
 - `Parse` and `ParseString` parse markdown content into a `Document`.
 - `Mutate` and `MutateString` parse, mutate, and serialize content in one step.
 - `ReadFile` parses a markdown file and refuses symlinks and non-regular files.
-- `UpdateFile` mutates a markdown file atomically and skips the write when bytes are unchanged.
+- `UpdateFile` mutates a markdown file in place and skips the write when bytes are unchanged.
 
 `Document` accessors and mutation methods:
 
@@ -93,6 +106,8 @@ Relevant exported errors:
 - `ErrFrontmatterNotMapping` when frontmatter is valid YAML but not a top-level mapping.
 - `ErrDuplicateFrontmatterKey` when a mapping contains duplicate keys.
 - `ErrEmptyKey` when a semantic key operation receives an empty key.
+- `ErrAnchorInUse` when `Delete` or `Set` is asked to remove or replace a key
+  that defines a YAML anchor other keys still alias.
 
 ## Library Usage
 
@@ -257,3 +272,7 @@ golangci-lint run ./...
 `mise.toml` pins [gortex](https://github.com/zzet/gortex), an optional
 code-graph explorer used while working on this library. Nothing in the build or
 the test suite invokes it; `mise install` is only needed if you want it.
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).
