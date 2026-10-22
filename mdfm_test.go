@@ -1415,7 +1415,9 @@ func TestReadRegularFile(t *testing.T) {
 	if string(content) != plainBody {
 		t.Fatalf("unexpected content: %q", string(content))
 	}
-	if perm != 0o600 {
+	// Windows has no Unix permission bits: Go reports 0666 for any writable
+	// file there, so the mode carries no information to assert.
+	if runtime.GOOS != windowsOS && perm != 0o600 {
 		t.Fatalf("unexpected perm: %#o", perm)
 	}
 }
@@ -1893,7 +1895,9 @@ func TestWriteFileRecreatesWithPerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lstat returned error: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows reports 0666 for any writable file, so the mode proves nothing
+	// there; the guard for a mode-0000 recreate is exercised on unix only.
+	if runtime.GOOS != windowsOS && info.Mode().Perm() != 0o600 {
 		t.Fatalf("unexpected perm: %#o", info.Mode().Perm())
 	}
 }
