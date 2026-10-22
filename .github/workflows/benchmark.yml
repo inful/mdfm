@@ -62,7 +62,7 @@ jobs:
           tool: go
           output-file-path: output.txt
           external-data-json-path: ./cache/benchmark-data.json
-          fail-on-alert: false
+          fail-on-alert: true
           comment-on-alert: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
 

@@ -2,7 +2,7 @@ version: 2
 
 before:
   hooks:
-    - go test ./...
+    - go test -race ./...
 
 builds:
   - id: mdfm
