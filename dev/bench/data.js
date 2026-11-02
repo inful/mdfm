@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792984006157,
+  "lastUpdate": 1793588599290,
   "repoUrl": "https://github.com/inful/mdfm",
   "entries": {
     "mdfm Go Benchmarks": [
@@ -5696,6 +5696,196 @@ window.BENCHMARK_DATA = {
             "value": 261,
             "unit": "allocs/op",
             "extra": "24510 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Jone Marius Vignes",
+            "username": "inful",
+            "email": "inful@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "Jone Marius Vignes",
+            "username": "inful",
+            "email": "inful@users.noreply.github.com"
+          },
+          "id": "349d542d07cd5ecacec23312c318672490ba8719",
+          "message": "test: update the linux write-failure test for the new restore parameter",
+          "timestamp": "2026-10-22T20:56:26Z",
+          "url": "https://github.com/inful/mdfm/commit/349d542d07cd5ecacec23312c318672490ba8719"
+        },
+        "date": 1793588598967,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkParse",
+            "value": 10242,
+            "unit": "ns/op\t    9208 B/op\t      78 allocs/op",
+            "extra": "113104 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParse - ns/op",
+            "value": 10242,
+            "unit": "ns/op",
+            "extra": "113104 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParse - B/op",
+            "value": 9208,
+            "unit": "B/op",
+            "extra": "113104 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParse - allocs/op",
+            "value": 78,
+            "unit": "allocs/op",
+            "extra": "113104 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParseLarge",
+            "value": 50726,
+            "unit": "ns/op\t   23491 B/op\t     323 allocs/op",
+            "extra": "23541 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParseLarge - ns/op",
+            "value": 50726,
+            "unit": "ns/op",
+            "extra": "23541 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParseLarge - B/op",
+            "value": 23491,
+            "unit": "B/op",
+            "extra": "23541 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkParseLarge - allocs/op",
+            "value": 323,
+            "unit": "allocs/op",
+            "extra": "23541 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes",
+            "value": 25082,
+            "unit": "ns/op\t   38084 B/op\t     158 allocs/op",
+            "extra": "47876 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes - ns/op",
+            "value": 25082,
+            "unit": "ns/op",
+            "extra": "47876 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes - B/op",
+            "value": 38084,
+            "unit": "B/op",
+            "extra": "47876 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetAndBytes - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "47876 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBytesOnly",
+            "value": 7466,
+            "unit": "ns/op\t   16736 B/op\t      34 allocs/op",
+            "extra": "163122 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBytesOnly - ns/op",
+            "value": 7466,
+            "unit": "ns/op",
+            "extra": "163122 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBytesOnly - B/op",
+            "value": 16736,
+            "unit": "B/op",
+            "extra": "163122 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBytesOnly - allocs/op",
+            "value": 34,
+            "unit": "allocs/op",
+            "extra": "163122 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetMany",
+            "value": 69824,
+            "unit": "ns/op\t  129059 B/op\t     470 allocs/op",
+            "extra": "17425 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetMany - ns/op",
+            "value": 69824,
+            "unit": "ns/op",
+            "extra": "17425 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetMany - B/op",
+            "value": 129059,
+            "unit": "B/op",
+            "extra": "17425 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetMany - allocs/op",
+            "value": 470,
+            "unit": "allocs/op",
+            "extra": "17425 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutate",
+            "value": 15577,
+            "unit": "ns/op\t   26608 B/op\t     113 allocs/op",
+            "extra": "77030 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutate - ns/op",
+            "value": 15577,
+            "unit": "ns/op",
+            "extra": "77030 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutate - B/op",
+            "value": 26608,
+            "unit": "B/op",
+            "extra": "77030 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutate - allocs/op",
+            "value": 113,
+            "unit": "allocs/op",
+            "extra": "77030 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetComplex",
+            "value": 49362,
+            "unit": "ns/op\t   71872 B/op\t     261 allocs/op",
+            "extra": "23317 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetComplex - ns/op",
+            "value": 49362,
+            "unit": "ns/op",
+            "extra": "23317 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetComplex - B/op",
+            "value": 71872,
+            "unit": "B/op",
+            "extra": "23317 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkSetComplex - allocs/op",
+            "value": 261,
+            "unit": "allocs/op",
+            "extra": "23317 times\n4 procs"
           }
         ]
       }
